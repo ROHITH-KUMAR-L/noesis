@@ -1,0 +1,20 @@
+# Keep the build context minimal: faster builds, smaller layers, no secrets.
+.git
+.github
+.venv
+myenv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Not needed inside the image.
+AGENTS.md
+plan.md
+data
+results
+checkpoints
+tests
+*.md
+!README.md

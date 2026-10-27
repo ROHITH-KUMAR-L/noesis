@@ -1,0 +1,46 @@
+# Runs the project in Docker with persistent caches (named volumes) and an
+# explicit network. Heavy ML dependencies are deliberately NOT in the image:
+# training runs against the local `myenv` venv (see AGENTS.md).
+#
+#   docker compose build
+#   docker compose run --rm app                    # smoke check
+#   docker compose run --rm app python -m ...      # any project command
+name: noesis
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: noesis:0.1.0
+    command: ["python", "-m", "memory_rl.smoke"]
+    init: true
+    restart: "no"
+    networks:
+      - noesis
+    volumes:
+      # Bind mounts: work happens against the checkout, not inside the container.
+      - ./configs:/app/configs:ro
+      - ./data:/app/data
+      - ./results:/app/results
+      # Named volumes: keep caches out of the image and across rebuilds.
+      - hf_cache:/home/app/.cache/huggingface
+      - torch_cache:/home/app/.cache/torch
+      - uv_cache:/home/app/.cache/uv
+    environment:
+      HF_HOME: /home/app/.cache/huggingface
+      TORCH_HOME: /home/app/.cache/torch
+      UV_CACHE_DIR: /home/app/.cache/uv
+
+networks:
+  noesis:
+    name: noesis
+    driver: bridge
+
+volumes:
+  hf_cache:
+    name: noesis_hf_cache
+  torch_cache:
+    name: noesis_torch_cache
+  uv_cache:
+    name: noesis_uv_cache

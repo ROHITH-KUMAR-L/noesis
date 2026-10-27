@@ -1,0 +1,83 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Ordered verification: lint -> typecheck -> test (order matters).
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Install project + dev tools
+        run: |
+          uv venv --python 3.11 .venv
+          uv pip install --python .venv/bin/python -e ".[dev]"
+
+      - name: Smoke
+        run: .venv/bin/python -m memory_rl.smoke
+
+      - name: Lint (ruff)
+        run: .venv/bin/ruff check .
+
+      - name: Typecheck (mypy)
+        run: .venv/bin/mypy
+
+      - name: Test (pytest)
+        run: .venv/bin/python -m pytest
+
+  # The Docker image must build, validate, stay within its size budget, and pass
+  # its own smoke check.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      IMAGE: noesis:ci
+      # Size budget: python:3.11-slim plus a dependency-free venv.
+      IMAGE_SIZE_BUDGET_MB: "400"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Validate compose file
+        run: docker compose -f docker-compose.yaml config --quiet
+
+      - name: Lint GitHub Actions workflows (actionlint)
+        run: docker run --rm -v "$PWD":/repo:ro rhysd/actionlint:latest -color
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          tags: ${{ env.IMAGE }}
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image size budget
+        run: |
+          size_bytes=$(docker image inspect "$IMAGE" --format '{{.Size}}')
+          size_mb=$((size_bytes / 1024 / 1024))
+          echo "image size: ${size_mb} MiB (budget ${IMAGE_SIZE_BUDGET_MB} MiB)"
+          test "$size_mb" -le "$IMAGE_SIZE_BUDGET_MB"
+
+      - name: Smoke test the image
+        run: docker run --rm "$IMAGE"

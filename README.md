@@ -1,13 +1,13 @@
 # Noesis: Cache-Aware RL Memory Controller for LLM Agents
 
-Research prototype for our AIML EL project. A frozen LLM agent works in **ALFWorld** and
-**WebShop**. Before every LLM call, a small **PPO** controller decides whether to edit the
+Research prototype for our AIML EL project. A frozen LLM agent works in **ALFWorld** (core)
+and **WebShop** (stretch). Before every LLM call, a small **PPO** controller decides whether to edit the
 agent's history at all, and if so chooses **KEEP / COMPRESS / PRUNE** for each past step.
 
 The twist: the reward is **task success minus the real API cost after prompt-caching
 discounts**, not the raw token count. Pruning an old message breaks the cached prefix and
 re-bills everything after it, so *fewer tokens does not always mean a smaller bill*. An
-extension adds **budget-constrained** control (PPO-Lagrangian, budget-conditioned policy).
+extension (stretch) adds **budget-constrained** control (PPO-Lagrangian, budget-conditioned policy).
 
 > **Status: Phases 0–1 done (memory engine + token accounting, 32 tests passing).
 > Phase 2 (cache cost model) is next. No RL training has run and no result exists yet.**
@@ -16,6 +16,7 @@ extension adds **budget-constrained** control (PPO-Lagrangian, budget-conditione
 
 | Document | Purpose |
 |---|---|
+| [`CLAUDE.md`](CLAUDE.md) | Agent guidance; authoritative on **scope, novelty claims and prior art** |
 | [`prd.md`](prd.md) | Requirements: problem, goals, hypotheses, metrics, **phases and work split** |
 | [`plan.md`](plan.md) | Implementation contract: invariants, interfaces, per-phase tests and exit gates |
 
@@ -62,11 +63,11 @@ python -m memory_rl.evaluation.run_eval --config configs/evaluation.yaml # Phase
 | 0 | Setup (package, Docker, CI) | ✅ |
 | 1 | Memory engine + token accounting | ✅ |
 | 2 | Cache-aware cost model (pricing profiles, prefix-cache simulator) | ⏭ next |
-| 3 | Frozen-LLM agent harness (vLLM, mock LLM, toy env, ALFWorld, WebShop) | ☐ |
+| 3 | Frozen-LLM agent harness (vLLM, mock LLM, toy env, ALFWorld; WebShop is stretch) | ☐ |
 | 4 | Controller MDP + cache/token reward | ☐ |
-| 5 | Baselines (window, obs masking, LLMLingua, threshold compaction, …) | ☐ |
+| 5 | Baselines (window, obs masking, LLMLingua, threshold compaction, CADOC-style, …) | ☐ |
 | 6 | PPO controller (cache-reward and token-reward variants) | ☐ |
-| 7 | Budget-constrained extension (PPO-Lagrangian, budget-conditioned) | ☐ |
+| 7 | Budget-constrained extension (PPO-Lagrangian, budget-conditioned), *stretch* | ☐ |
 | 8 | Final evaluation (success vs real-cost Pareto) | ☐ |
 | 9 | Ablations, novelty re-check, report | ☐ |
 

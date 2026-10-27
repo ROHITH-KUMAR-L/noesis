@@ -2,7 +2,7 @@
 
 ## 1. Instructions for the AI coding agent
 
-Read this document before changing code. It is the implementation contract. [`prd.md`](prd.md) holds the product/research requirements, hypotheses and phase overview; this file holds the invariants, interfaces, per-phase work, tests and exit gates.
+Read [`CLAUDE.md`](CLAUDE.md) first, then this document before changing code. This document is the implementation contract. [`prd.md`](prd.md) holds the product/research requirements, hypotheses and phase overview; this file holds the invariants, interfaces, per-phase work, tests and exit gates. If `CLAUDE.md` disagrees with this file on **scope or claims**, `CLAUDE.md` is newer: flag the conflict rather than silently picking one.
 
 Before implementing:
 
@@ -28,7 +28,7 @@ The first version of this plan (commit `67386a3`) targeted a DQN controller on s
 
 ### 2.2 What we are building
 
-A research prototype in which a frozen LLM agent (ReAct loop) acts in ALFWorld and WebShop. Before every LLM call, a small **PPO memory controller** may edit the agent's history:
+A research prototype in which a frozen LLM agent (ReAct loop) acts in ALFWorld (core) and WebShop (stretch). Before every LLM call, a small **PPO memory controller** may edit the agent's history:
 
 - a **gate** decides `NO_EDIT` or `EDIT` for this turn;
 - on `EDIT`, each eligible past item receives **KEEP**, **COMPRESS** (fixed, non-learned compressor, only when the result is shorter) or **PRUNE** (removed from the active prompt; archived for analysis).
@@ -44,7 +44,13 @@ Central question:
 - Claims concern **context management for a frozen LLM agent**, not LLM capability.
 - Cost claims hold **under stated pricing profiles and the simulator's cache model**; validation against real usage is reported separately (Phase 8).
 - PPO superiority is a hypothesis. A reliable negative or inconclusive result is a valid outcome.
-- Positioning versus TRACER, LRE, TokenPilot, AKV and other work must be re-verified (Phase 9) before any novelty claim is reported.
+- Positioning versus CADOC, CAPC, TRACER, LRE, TokenPilot, AKV and other work must be re-verified (Phase 9) before any novelty claim is reported. Claim exactly the novelty in `CLAUDE.md` / `prd.md` §15, always with "to our knowledge".
+
+### 2.4 Scope priority
+
+- **Core (must finish):** Phases 0–6 and 8 on **ALFWorld** (unless the team decides otherwise).
+- **Stretch:** Phase 7 (budget control) and WebShop.
+- Don't start stretch work while a core phase's exit gate is still failing.
 
 ## 3. Scope and fixed initial decisions
 
@@ -60,8 +66,8 @@ Central question:
 | Frozen LLM | Open instruct model (default ~7–8B, e.g. Qwen2.5-7B-Instruct) via vLLM, prefix caching on, temperature 0 |
 | Tokenizer | The frozen LLM's own HF tokenizer + chat template for all cost/cache accounting; tiktoken / test tokenizer kept for unit tests |
 | Cost | Prefix-cache simulator + pricing profiles from config (never hardcoded prices) |
-| Environments | Toy tool env (CI/debug), ALFWorld, WebShop |
-| Baselines | Full history, sliding window, observation masking, LLMLingua, threshold compaction rule, random, always-KEEP, token-reward PPO |
+| Environments | Toy tool env (CI/debug), ALFWorld (core), WebShop (stretch) |
+| Baselines | Full history, sliding window, observation masking (must-beat), LLMLingua, threshold compaction rule, CADOC-style analytical rule, random, always-KEEP, token-reward PPO |
 | Main metric | Task success vs real cost per episode (Pareto frontier) |
 | Reproducibility | Seeds, fixed splits, versioned configs, per-episode JSONL records |
 
@@ -118,7 +124,7 @@ Existing modules are marked ✅. Others are planned and created when their phase
 │   ├── llm/                   # Phase 3: backend.py (vLLM/OpenAI-compatible), mock.py, hf_tokenizer.py
 │   ├── envs/                  # Phase 3: base.py, toy.py, alfworld.py, webshop.py, agent_loop.py, agent_prompt.py
 │   ├── controller/            # Phase 4/6/7: env.py, features.py, reward.py, policy.py, ppo.py, train.py, lagrangian.py
-│   ├── baselines/             # Phase 5: full_history.py, sliding_window.py, obs_masking.py, llmlingua.py, threshold_compaction.py, random_policy.py
+│   ├── baselines/             # Phase 5: full_history.py, sliding_window.py, obs_masking.py, llmlingua.py, threshold_compaction.py, cadoc_rule.py, random_policy.py
 │   └── evaluation/            # Phase 8: records.py, run_eval.py, metrics.py, plots.py, stats.py
 ├── tests/                     ✅ test_smoke, test_memory_operations, test_tokenizer_and_prompt
 │                              # planned: test_cost_model, test_agent_harness, test_controller_env,
@@ -265,7 +271,7 @@ Hand-computed cost tables for a scripted five-call episode match exactly under b
 2. `llm/hf_tokenizer.py`: HF tokenizer adapter with `encode`/`count` plus chat-template rendering, identity recorded (model name and revision).
 3. `envs/agent_prompt.py`: `AgentPromptSerializer` (§6.2).
 4. `envs/toy.py`: small deterministic tool environment (for example "look up item IDs, then combine them") where early observations are needed later and others are distractors, with variable-length observations. Runs in CI.
-5. `envs/alfworld.py`, `envs/webshop.py`: adapters to `AgentEnv`, ReAct prompt with fixed few-shot examples, step limits from config. Setup scripts download assets into `data/raw/` (gitignored). Verify licenses, versions and split sizes, and record them.
+5. `envs/alfworld.py` (core) and `envs/webshop.py` (stretch, after core gates pass): adapters to `AgentEnv`, ReAct prompt with fixed few-shot examples, step limits from config. Setup scripts download assets into `data/raw/` (gitignored). Verify licenses, versions and split sizes, and record them.
 6. `envs/agent_loop.py`: the loop of §4.1 with a `MemoryPolicy` hook (always-KEEP by default) and JSONL episode records (§6.8).
 7. Optional extras in `pyproject.toml`: `[envs]`, `[llm]`. Smoke probes for them stay non-fatal.
 
@@ -280,7 +286,7 @@ Hand-computed cost tables for a scripted five-call episode match exactly under b
 ### Exit gate
 
 - CI runs the toy env end-to-end with the mock LLM.
-- **Competence gate:** the frozen LLM with full history reaches a non-trivial success rate on ALFWorld and WebShop *validation* (record the numbers; if below ~20%, change the model or prompt before Phase 6). Report the full-history cost per episode under each profile.
+- **Competence gate:** the frozen LLM with full history reaches a non-trivial success rate on ALFWorld *validation* (and WebShop's, when the stretch work is attempted) (record the numbers; if below ~20%, change the model or prompt before Phase 6). Report the full-history cost per episode under each profile.
 
 ## Phase 4: Controller MDP and reward
 
@@ -313,9 +319,10 @@ Hand-computed cost tables for a scripted five-call episode match exactly under b
 |---|---|---|
 | Full history | never edit | — |
 | Sliding window | keep the last *K* turns (pairs of thought/action and observation) | *K* |
-| Observation masking | replace observations older than *M* turns with a fixed placeholder; keep thoughts/actions | *M* |
+| Observation masking (**must-beat**) | replace observations older than *M* turns with a fixed placeholder; keep thoughts/actions | *M* |
 | LLMLingua | compress observations older than *M* once with LLMLingua-2 at rate *r* (counts compressor latency) | *M*, *r* |
 | Threshold compaction | no edits until the prompt exceeds *T* tokens, then one compaction (compress, then prune the oldest observations down to *T/2*) | *T* |
+| CADOC-style rule | analytical (EOQ-style) rule that includes cache-rebuild cost and decides when to batch edits; re-implemented from the paper, formula checked against the source, deviations documented | CADOC's parameters |
 | Random valid | random gate and actions under the masks | p(edit) |
 
 Plus a common runner `evaluation/run_eval.py --method … --split valid` writing §6.8 records.
@@ -326,7 +333,7 @@ Window boundary behaviour; masking leaves protected content and actions untouche
 
 ### Exit gate
 
-Every baseline × knob runs on a fixed validation subset of both environments and produces valid records and aggregate metrics.
+Every baseline × knob runs on a fixed ALFWorld validation subset (and WebShop's, if stretch) and produces valid records and aggregate metrics. The CADOC-style rule's re-implementation is documented, with its source equations cited.
 
 ## Phase 6: PPO controller
 
@@ -353,7 +360,9 @@ Shapes and finiteness; masked actions are never sampled (exploration included); 
 
 On the toy env, PPO beats random and always-KEEP on the reward with a clear margin over ≥ 3 seeds. A small ALFWorld subset run trains end-to-end, writes metrics and checkpoints, and evaluates from a checkpoint without training code.
 
-## Phase 7: Budget-constrained extension
+## Phase 7: Budget-constrained extension (stretch)
+
+Start only after every core exit gate (Phases 2–6) passes.
 
 ### Work
 
@@ -375,7 +384,7 @@ Budget compliance ≥ 95% at the three validation budgets, or the shortfall is r
 ### Protocol
 
 1. Freeze configs, checkpoints and knob grids from validation. Record them before touching test data.
-2. Run every method × knob × (budget) × pricing profile × seed on the **same** test tasks (ALFWorld `valid_unseen`; WebShop test split as verified in Phase 3).
+2. Run every method × knob × (budget) × pricing profile × seed on the **same** test tasks (core: ALFWorld `valid_unseen`; stretch: WebShop test split as verified in Phase 3).
 3. Baselines don't depend on prices, so their stored per-call token traces can be re-priced under every profile without re-running. A PPO policy trained under profile A and re-priced under profile B is the **transfer** condition and is labelled as such; the main result for profile B uses policies trained under B.
 4. Aggregate: §8 metrics of `prd.md`, paired bootstrap CIs over tasks, per-seed variation.
 5. Plots: success vs real cost (Pareto, main), success vs tokens, cache-hit rate, edits per episode and edit timing, budget compliance.
@@ -383,10 +392,10 @@ Budget compliance ≥ 95% at the three validation budgets, or the shortfall is r
 
 ### Positive-claim criteria (fix them on validation before seeing test)
 
-- **H1 supported:** at the success level of full history (within 3 pp), cache-aware PPO's cost is lower than every baseline's frontier at that success, with a paired CI excluding 0.
+- **H1 supported:** at the success level of full history (within 3 pp), cache-aware PPO's cost is lower than every baseline's frontier at that success, explicitly including observation masking and the CADOC-style rule, with a paired CI excluding 0.
 - **H2 supported:** on at least one environment × profile, the token-reward controller has fewer input tokens and higher real cost than cache-aware PPO or full history, with a CI.
-- **H3 supported:** the cache-aware controller has significantly fewer edits per episode and more tokens removed per edit than the token-reward controller.
-- **H4 supported:** Phase 7 gate on test.
+- **H3 supported:** the cache-aware controller has significantly fewer edits per episode and more tokens removed per edit than the token-reward controller. Its edit timing is also reported next to the CADOC-style rule's.
+- **H4 supported (stretch):** Phase 7 gate on test.
 
 Otherwise report the measured outcome and narrow the conclusion. Do not change thresholds after seeing test results.
 
@@ -394,7 +403,7 @@ Otherwise report the measured outcome and narrow the conclusion. Do not change t
 
 - Ablations (one factor at a time): no gate (flat per-item); no suffix-tokens feature; no COMPRESS; transformer context encoder; pricing-profile transfer (train A, test B); a different frozen LLM; cold vs warm cross-episode cache.
 - Failure analysis: overflow, budget violation, step limit, wrong action after a relevant observation was pruned.
-- Related-work and novelty re-check (TRACER, LRE, TokenPilot, AKV, and any newer work): compare actions, objective, reward, training, baselines and evaluation.
+- Related-work and novelty re-check on arXiv (CADOC, CAPC, TRACER, LRE, TokenPilot, AKV, observation masking, "Beyond Token Savings", PCRL, and any newer work): compare actions, objective, reward, training, baselines and evaluation. Verify every bibliographic detail against the source.
 - Deliverables: code and tests, configs, logs, checkpoint metadata, per-episode records, one-command figure regeneration, the report, slides and a demo episode visualisation.
 
 ## 8. Cross-cutting edge-case checklist
@@ -430,13 +439,13 @@ The research hypotheses count as **supported** only if the Phase 8 criteria are 
 | M2 | Cache cost model | Hand-computed cost cases |
 | M3 | Agent harness and competence gate | Toy env in CI; non-trivial full-history success |
 | M4 | Controller MDP and reward | 1,000 random episodes; leakage tests |
-| M5 | Baselines | All baselines on validation, both envs |
+| M5 | Baselines | All baselines (incl. CADOC-style) on ALFWorld validation |
 | M6 | PPO (cache and token variants) | Beats random/KEEP on toy; ALFWorld subset end-to-end |
-| M7 | Budget-constrained extension | ≥ 95% compliance or a documented gap |
+| M7 (stretch) | Budget-constrained extension | ≥ 95% compliance or a documented gap |
 | M8 | Final evaluation | Same-task, multi-seed, multi-profile results |
 | M9 | Report | Claims match measured evidence |
 
-Phases 2 and 3 can proceed in parallel, as can 4 and 5. If time runs short, finish M0–M6 and M8 on ALFWorld only, then add WebShop and Phase 7.
+Phases 2 and 3 can proceed in parallel, as can 4 and 5. Core is M0–M6 and M8 on ALFWorld; WebShop and Phase 7 are stretch, started only once every core gate passes.
 
 ## 11. Developer workflow and commands
 

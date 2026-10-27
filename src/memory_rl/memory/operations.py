@@ -207,7 +207,7 @@ def valid_actions(
 
     Pruned items and protected system content are never candidates. If this
     returns ``()`` the caller must terminate with an explicit reason instead of
-    looping (plan.md §7 Phase 2).
+    looping (plan.md §7 Phase 4).
     """
     if item.status is MemoryStatus.PRUNED or item.memory_type is MemoryType.SYSTEM:
         return ()

@@ -1,7 +1,7 @@
 [project]
 name = "memory-rl"
 version = "0.1.0"
-description = "Budget-constrained reinforcement learning for task-critical memory retention in multi-step AI agents."
+description = "Cache-aware reinforcement learning (PPO) memory controller for multi-turn LLM agents."
 readme = "README.md"
 requires-python = ">=3.11"
 # Dependencies are added only when a phase actually needs them (plan.md §5).

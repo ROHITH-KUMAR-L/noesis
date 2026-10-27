@@ -17,8 +17,8 @@ from dataclasses import dataclass
 #: Installed-dependency probes: (module, why it matters, fatal?).
 _PROBES: tuple[tuple[str, str, bool], ...] = (
     ("tiktoken", "Phase 1 token accounting", True),
-    ("numpy", "Phase 2 feature vectors", False),
-    ("torch", "Phase 5 DQN training", False),
+    ("numpy", "Phase 4 observation features", False),
+    ("torch", "Phase 6 PPO training", False),
 )
 
 

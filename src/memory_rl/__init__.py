@@ -1,6 +1,7 @@
-"""Budget-constrained reinforcement learning for task-critical memory retention.
+"""Cache-aware reinforcement learning memory controller for multi-turn LLM agents.
 
-See ``plan.md`` for the implementation contract (phases, invariants, exit gates).
+See ``prd.md`` for requirements and phases, and ``plan.md`` for the implementation
+contract (invariants, interfaces, exit gates).
 """
 
 __version__ = "0.1.0"

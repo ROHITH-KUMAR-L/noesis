@@ -1,626 +1,471 @@
-# Implementation Plan: Budget-Constrained RL for Task-Critical Memory
+# Implementation Plan: Cache-Aware RL Memory Controller for LLM Agents
 
 ## 1. Instructions for the AI coding agent
 
-Read this document before changing code. Treat it as the implementation contract for the first research prototype.
+Read this document before changing code. It is the implementation contract. [`prd.md`](prd.md) holds the product/research requirements, hypotheses and phase overview; this file holds the invariants, interfaces, per-phase work, tests and exit gates.
 
 Before implementing:
 
-1. Inspect the actual workspace, existing code, tests, project metadata, and Git status. This plan was written from a workspace snapshot that contained `plan.md`; the implementation agent must verify the current state rather than assume it is unchanged.
-2. Preserve existing project conventions and user changes. Do not overwrite or remove unrelated work.
-3. If the repository already has an architecture, adapt this plan to it and document meaningful deviations. Do not create duplicate modules just to match the example tree below.
-4. Implement one phase at a time. Run its focused tests and satisfy its exit criteria before moving on.
-5. Do not silently skip a failing test, fabricate benchmark results, or describe illustrative values as measured results.
-6. Keep secrets, private benchmark data, credentials, and local machine paths out of source control and reports.
-7. At completion, report what was implemented, commands run, test results, known limitations, and the next incomplete milestone.
+1. Inspect the actual workspace, code, tests, project metadata and Git status. Do not assume this plan's snapshot is current.
+2. Preserve existing conventions and user changes. Do not overwrite or remove unrelated work.
+3. Adapt to the existing architecture and document meaningful deviations. Do not create duplicate modules just to match the tree below.
+4. Implement one phase at a time. Run its focused tests and satisfy its exit gate before moving on.
+5. Do not silently skip a failing test, fabricate results, or describe illustrative values as measured.
+6. Keep secrets, API keys, raw benchmark data and absolute local paths out of source control and reports.
+7. When finished, report what was implemented, the commands run, test results, known limitations, and the next incomplete milestone.
 
-When a requirement is underspecified, use the defaults in this plan. Ask the user only when a decision materially changes the research question, requires a paid/external service, or cannot be made safely from the repository context.
+When a requirement is underspecified, use the defaults here. Ask the user only when a decision changes the research question, needs a paid or external service, or cannot be made safely from the repository.
+
+### 1.1 History of this plan
+
+The first version of this plan (commit `67386a3`) targeted a DQN controller on synthetic QA under a token budget, with LoCoMo transfer. The project was re-scoped to the current problem: PPO, ALFWorld/WebShop agents on a frozen LLM, and a cache-adjusted cost objective, with the token budget kept as a constrained-RL extension. Phase 0 and Phase 1 code (memory engine, tokenizer, serializer) carries over unchanged.
 
 ## 2. Project definition
 
 ### 2.1 Working title
 
-**Budget-Constrained Reinforcement Learning for Task-Critical Memory Retention in Multi-Step AI Agents**
+**Cache-Aware Reinforcement Learning for Memory Management in Multi-Turn LLM Agents**
 
 ### 2.2 What we are building
 
-Build a reproducible research prototype that manages a history of messages, facts, decisions, and tool results under a constrained input-context budget. A small DQN controller processes memory units and chooses one operation for each eligible unit:
+A research prototype in which a frozen LLM agent (ReAct loop) acts in ALFWorld and WebShop. Before every LLM call, a small **PPO memory controller** may edit the agent's history:
 
-- **KEEP** the current representation.
-- **COMPRESS** it using a separate, fixed compression method when a shorter valid representation is available.
-- **PRUNE** it from the active context while retaining its archived record for experiment analysis.
+- a **gate** decides `NO_EDIT` or `EDIT` for this turn;
+- on `EDIT`, each eligible past item receives **KEEP**, **COMPRESS** (fixed, non-learned compressor, only when the result is shorter) or **PRUNE** (removed from the active prompt; archived for analysis).
 
-A separate, fixed answerer receives the resulting active context and the current task. It is not the memory controller. The controller must not receive answer keys, reference answers, or synthetic criticality labels as inference-time features.
+The reward is task success minus the **cache-adjusted API cost** of every LLM call, computed by a prefix-cache simulator under configurable provider pricing profiles. The comparison controller is identical but trained on a **token-count** cost. A constrained extension adds dollar and token **budgets** (PPO-Lagrangian, budget-conditioned policy).
 
-The project is a research system, not a production conversational assistant. Its central question is:
+Central question:
 
-> At a matched active-context token budget, can a learned memory controller preserve downstream task success better than strong non-RL memory-management baselines?
-
-The initial controlled environment uses synthetic tasks with known answers and required facts. Once that environment, baselines, and evaluation are reliable, the same pipeline can be adapted to a public conversational-memory benchmark.
+> At matched task success, does a controller trained on cache-adjusted cost achieve a lower real API cost than token-count-trained controllers and hand-written context-management rules?
 
 ### 2.3 Research claim boundaries
 
-- The intended claim concerns **memory management**, not general language-model capability.
-- Claims about multi-step tool-using agents require explicit tasks where earlier tool results or decisions are needed later. Conversational question-answering results alone do not establish that broader claim.
-- DQN superiority is a hypothesis, not an implementation requirement. A reliable, reproducible negative or inconclusive result is a valid research outcome.
-- Do not claim novelty until relevant work (including Mem-α and Memory-R1) and benchmark protocols have been reviewed.
+- Claims concern **context management for a frozen LLM agent**, not LLM capability.
+- Cost claims hold **under stated pricing profiles and the simulator's cache model**; validation against real usage is reported separately (Phase 8).
+- PPO superiority is a hypothesis. A reliable negative or inconclusive result is a valid outcome.
+- Positioning versus TRACER, LRE, TokenPilot, AKV and other work must be re-verified (Phase 9) before any novelty claim is reported.
 
 ## 3. Scope and fixed initial decisions
 
 | Decision | Initial implementation |
 |---|---|
-| Language/runtime | Python 3.11 unless the existing repository sets a supported version |
-| Learning algorithm | DQN with replay buffer and target network |
-| Decision unit | One memory item at a time, in a finite, deterministic episode order |
-| Action set | KEEP, COMPRESS, PRUNE; invalid actions are masked |
-| Compression | Fixed deterministic compressor initially; it is not learned by DQN |
-| Training data | Generated synthetic episodes with known ground truth |
-| Answering | Deterministic exact-match answerer for synthetic tasks; one fixed answer model per external evaluation |
-| Initial baselines | Full history, sliding window, relevance/recency heuristic, fixed summarization |
-| Initial benchmark candidate | LoCoMo, subject to verifying its current release, license, split, and scoring rules |
-| Main metric | Task success at matched actual prompt-token usage |
-| Reproducibility | Configured seeds, fixed splits, versioned tokenizer/model, per-example results |
+| Language/runtime | Python ≥ 3.11 (see `pyproject.toml`) |
+| Learning algorithm | PPO (clipped objective, GAE, masked categorical heads) |
+| Decision point | Once per agent turn, immediately before the LLM call |
+| Action space | Hierarchical: gate {NO_EDIT, EDIT}; per eligible item {KEEP, COMPRESS, PRUNE} with validity masks |
+| Memory unit | One item per agent step component: assistant thought/action, tool observation |
+| Protected content | System prompt, environment task instruction, few-shot examples |
+| Compression | Fixed compressor (rule-based initially; LLMLingua-2 optional) applied at most once per item |
+| Frozen LLM | Open instruct model (default ~7–8B, e.g. Qwen2.5-7B-Instruct) via vLLM, prefix caching on, temperature 0 |
+| Tokenizer | The frozen LLM's own HF tokenizer + chat template for all cost/cache accounting; tiktoken / test tokenizer kept for unit tests |
+| Cost | Prefix-cache simulator + pricing profiles from config (never hardcoded prices) |
+| Environments | Toy tool env (CI/debug), ALFWorld, WebShop |
+| Baselines | Full history, sliding window, observation masking, LLMLingua, threshold compaction rule, random, always-KEEP, token-reward PPO |
+| Main metric | Task success vs real cost per episode (Pareto frontier) |
+| Reproducibility | Seeds, fixed splits, versioned configs, per-episode JSONL records |
 
-Do not add retrieval to the initial DQN action space. A retrieval-based memory strategy may be added later as a separate baseline, not mixed into the first experiment.
+Retrieval is not in the action space.
 
 ## 4. System behavior and invariants
 
 ### 4.1 End-to-end flow
 
 ```text
-conversation/task history
-        ↓
-memory items + immutable archive
-        ↓
-token accounting and observable features
-        ↓
-policy (baseline or DQN) chooses operations
-        ↓
-active memory + current task
-        ↓
-fixed answerer
-        ↓
-answer scoring + efficiency metrics + experiment record
+env.reset(task) → protected prefix (system + task instruction)
+loop per turn t:
+    history items + features ──► controller (gate, per-item actions)
+    memory engine applies actions (archive keeps originals)
+    agent serializer: protected prefix + active items (in order)
+    cache simulator: cached prefix vs live entries → CallCost
+    frozen LLM → thought/action  → new ASSISTANT item
+    env.step(action) → observation → new TOOL_RESULT item
+until success | failure | step limit | context/budget violation
+episode record: success/score, Σ costs, tokens, cache stats, edits, latency
 ```
 
 ### 4.2 Invariants every implementation must preserve
 
-1. A pruned item is absent from the active prompt. Keeping an archive for diagnostics must not make it available to the answerer.
-2. System instructions and the current task/question are outside the controller's action space and cannot be pruned.
-3. Ground-truth labels may be used by the synthetic simulator for rewards and diagnostics only. They must not enter policy observations, feature computation, or answer prompts.
-4. All methods in a comparison use the same task examples, tokenizer, prompt template, answerer, scoring rules, and budget definition.
-5. Count tokens for the complete serialized answerer input, including fixed instructions, formatting, and the current question. Also report memory-only tokens separately.
-6. Never silently truncate a prompt and label it as full history or as a successful budget-compliant example.
-7. A compression operation is valid only if the resulting text is shorter under the configured tokenizer. Compression does not imply semantic preservation; answer success and critical fact retention must be measured independently.
-8. Every episode has a finite decision horizon and a defined terminal state.
-9. Every recorded metric is derived from actual run data. Missing cost or latency measurements are marked unavailable, not estimated as measured values.
-10. Randomness is controlled by explicit seeds for task generation, policy exploration, replay sampling, and evaluation where applicable.
+1. A pruned item is absent from every subsequent prompt. Archiving it for diagnostics must not make it available to the LLM.
+2. System instructions, the environment's task instruction and few-shot examples are outside the controller's action space and cannot be pruned or compressed.
+3. Ground-truth or simulator-only information (gold trajectories, success flags before termination, expert plans, reference answers, `is_critical` labels) never enters policy observations, features, memory metadata or prompts.
+4. All methods in a comparison use the same tasks, LLM and decoding settings, prompt layout, tokenizer, compressor (where applicable), cost model and pricing profile, and scorer.
+5. Cost is computed from the **exact serialized token sequence** sent to the LLM, using the LLM's tokenizer and chat template. Memory-only tokens are reported separately.
+6. Prompts are never silently truncated. A context-limit overflow is a recorded episode failure.
+7. COMPRESS is valid only if the result is shorter under the configured tokenizer. Compression is not assumed to preserve meaning; task success measures that.
+8. Every episode has a finite horizon (environment step limit) and an explicit terminal reason.
+9. Every reported metric comes from actual run data. Unmeasured costs or latencies are marked unavailable, never estimated as measured.
+10. Randomness is controlled by explicit seeds: environment/task sampling, controller init, PPO action sampling, minibatch order and evaluation.
+11. Cost is summed over **all** LLM calls in an episode, so a policy that makes the agent take more steps pays for them.
+12. Prices live only in versioned pricing-profile configs that record their source and date.
 
-## 5. Proposed repository layout
+## 5. Repository layout
 
-Adapt to existing conventions before creating files. If starting from an empty project, use a Python `src/` layout:
+Existing modules are marked ✅. Others are planned and created when their phase lands.
 
 ```text
 .
-├── README.md
-├── pyproject.toml
+├── README.md  prd.md  plan.md  pyproject.toml  Dockerfile  docker-compose.yaml
 ├── configs/
-│   ├── environment.yaml
-│   ├── dqn.yaml
-│   └── evaluation.yaml
-├── data/
-│   ├── README.md
-│   ├── raw/                 # ignored; never commit restricted data
-│   ├── processed/
-│   └── synthetic/
-├── src/
-│   └── memory_rl/
-│       ├── memory/
-│       │   ├── models.py
-│       │   ├── store.py
-│       │   ├── tokenizer.py
-│       │   └── operations.py
-│       ├── environment/
-│       │   ├── tasks.py
-│       │   ├── features.py
-│       │   ├── reward.py
-│       │   └── memory_env.py
-│       ├── controller/
-│       │   ├── dqn.py
-│       │   ├── replay_buffer.py
-│       │   └── train.py
-│       ├── answering/
-│       │   ├── interface.py
-│       │   └── synthetic.py
-│       ├── baselines/
-│       │   ├── full_history.py
-│       │   ├── sliding_window.py
-│       │   ├── heuristic.py
-│       │   └── summarization.py
-│       └── evaluation/
-│           ├── metrics.py
-│           ├── run_eval.py
-│           └── report.py
-├── tests/
-│   ├── test_memory_operations.py
-│   ├── test_tokenizer_and_prompt.py
-│   ├── test_environment.py
-│   ├── test_no_information_leakage.py
-│   ├── test_baselines.py
-│   └── test_dqn.py
-├── scripts/
-├── checkpoints/             # generated; normally ignored
-└── results/                 # generated; normally ignored or selectively published
+│   ├── pricing/               # provider profiles (YAML, with source + date)
+│   ├── env/                   # alfworld.yaml, webshop.yaml, toy.yaml
+│   ├── ppo.yaml  lagrangian.yaml  baselines.yaml  evaluation.yaml
+├── data/                      # raw/ gitignored; environment assets downloaded by scripts
+├── src/memory_rl/
+│   ├── smoke.py               ✅
+│   ├── memory/                ✅ models, operations, store, prompt, tokenizer
+│   ├── cost/                  # Phase 2: pricing.py, cache_sim.py, meter.py
+│   ├── llm/                   # Phase 3: backend.py (vLLM/OpenAI-compatible), mock.py, hf_tokenizer.py
+│   ├── envs/                  # Phase 3: base.py, toy.py, alfworld.py, webshop.py, agent_loop.py, agent_prompt.py
+│   ├── controller/            # Phase 4/6/7: env.py, features.py, reward.py, policy.py, ppo.py, train.py, lagrangian.py
+│   ├── baselines/             # Phase 5: full_history.py, sliding_window.py, obs_masking.py, llmlingua.py, threshold_compaction.py, random_policy.py
+│   └── evaluation/            # Phase 8: records.py, run_eval.py, metrics.py, plots.py, stats.py
+├── tests/                     ✅ test_smoke, test_memory_operations, test_tokenizer_and_prompt
+│                              # planned: test_cost_model, test_agent_harness, test_controller_env,
+│                              #          test_no_information_leakage, test_baselines, test_ppo, test_lagrangian
+├── scripts/                   # environment setup, vLLM launch, figure regeneration
+├── checkpoints/  results/     # generated; gitignored
 ```
 
-Keep modules small and responsibilities separate. Avoid importing benchmark-specific code into the core memory engine. Add dependencies only when the selected implementation needs them; do not install every package mentioned in older drafts preemptively.
+Heavy dependencies (torch, vllm, alfworld, webshop, llmlingua, transformers) go in optional extras (`[rl]`, `[envs]`, `[llmlingua]`) and are added only when their phase needs them. CI must keep working without them.
 
 ## 6. Data and API contracts
 
-### 6.1 Memory item
+### 6.1 Memory item ✅
 
-Use a typed data model (a dataclass is sufficient unless the project already uses another validation library) with at least:
+Implemented in `memory/models.py`. Fields: `memory_id`, `text`, `original_text`, `token_count`, `turn_index`, `memory_type`, `status`, `compression_count`, `dependencies`, `metadata`. `metadata` may hold only inference-available attributes; simulator-only labels are rejected at construction time (`SIMULATOR_ONLY_LABELS`).
 
-| Field | Meaning |
-|---|---|
-| `memory_id` | Stable unique ID within an episode |
-| `text` | Current active representation |
-| `original_text` | Immutable original text for analysis; never shown if item is pruned |
-| `token_count` | Count for current representation, recalculated after edits |
-| `turn_index` | Position in the source history |
-| `memory_type` | User message, assistant message, tool result, fact, decision, etc. |
-| `status` | Active, compressed, or pruned |
-| `compression_count` | Number of successful compressions |
-| `dependencies` | Optional IDs of linked items; do not infer or expose labels unavailable at inference |
-| `metadata` | Non-sensitive, inference-available attributes only |
+For agents: assistant thought/action → `MemoryType.ASSISTANT`; environment observation → `MemoryType.TOOL_RESULT`. Protected content is never stored as an item.
 
-Keep simulator-only labels such as `is_critical`, `importance`, `required_fact_ids`, and `reference_answer` in a separate task/label object. Enforce this separation in constructors, feature functions, and tests.
+### 6.2 Tokenizer and prompt serializers ✅ / Phase 3
 
-### 6.2 Tokenizer and prompt builder
+- `Tokenizer` protocol (`name`, `version`, `count`) with `TestTokenizer` and `TiktokenTokenizer` ✅. Phase 3 adds an HF tokenizer adapter matching the frozen LLM. It also exposes `encode()` returning token IDs, which the cache simulator needs for prefix comparison.
+- `PromptSerializer` ✅ (memory block, then question) stays for QA-style tests.
+- Phase 3 adds `AgentPromptSerializer`: chat messages in the order **[system] → [task instruction + few-shot] → history items in turn order**, rendered with the LLM's chat template. It returns token IDs, `prefix_tokens` (protected), `memory_tokens`, `total_prompt_tokens`, and `included_ids`. Stable content comes first so caching works; an edit to item *i* changes only tokens from *i* onward.
+- Fail loudly when the tokenizer cannot load. Never fall back to character or word counts.
 
-Provide one tokenizer interface used by every method. It must:
+### 6.3 Memory operations ✅
 
-- Be selected to match the answer model where possible.
-- Have an explicit stable name/version recorded in experiment metadata.
-- Count empty strings, Unicode text, punctuation, numbers, and formatted prompts consistently.
-- Fail explicitly if its configured tokenizer cannot be loaded; do not silently fall back to character or word counts.
-- Support a deterministic test tokenizer for isolated unit tests if a model tokenizer is unavailable.
+Implemented in `memory/operations.py` and `memory/store.py`: KEEP, COMPRESS and PRUNE return `OperationResult`; `valid_actions()` gives the mask in canonical order; the store keeps the active view, the archive and a hash-only provenance log. Phase 4 adds the rule that COMPRESS is applied **at most once per item** (mask it when `compression_count ≥ 1`), so a cache-friendly "compress once" behaviour is possible and repeated recompression cannot thrash the cache.
 
-Build prompts through a single shared serializer. Calculate and expose:
-
-- `memory_tokens`: tokens of the serialized active memory only.
-- `fixed_prompt_tokens`: instructions, separators, and current task/question.
-- `total_prompt_tokens`: token count of the exact final serialized input.
-- `answer_tokens`: generated output tokens, when available.
-
-If a provider reports usage, record it alongside local counts and document discrepancies. Never mix token definitions in a single budget-compliance metric.
-
-### 6.3 Memory operations
-
-Implement operations in the memory engine, not in the policy:
-
-- `KEEP`: item remains active and unchanged.
-- `COMPRESS`: call the configured fixed compressor, validate output, update text/count/status/history only on success. If output is empty, unchanged, longer, or invalid, report compression as unavailable/failed and preserve the original. The policy's action mask should normally exclude unavailable compression.
-- `PRUNE`: mark item pruned and omit it from active prompt construction. Preserve original record and log old token count as potential savings.
-
-Each operation should return a structured result describing whether it changed the item, token delta, reason, and resulting status. Do not hide failure by returning a success-shaped result.
-
-### 6.4 Task and episode contracts
-
-A synthetic task includes:
-
-- Ordered history items.
-- Current question/task.
-- Reference answer and answer-checking rule.
-- Required fact IDs, kept outside controller observations.
-- Task family and difficulty metadata.
-- Episode seed or stable identifier.
-
-The environment should expose a Gymnasium-like interface even if it does not depend on Gymnasium:
+### 6.4 Cache cost model (Phase 2)
 
 ```python
-observation = env.reset(task, seed=seed)
-observation, reward, terminated, info = env.step(action)
+@dataclass(frozen=True)
+class PricingProfile:
+    name: str
+    input_per_mtok: float          # $ per 1M uncached input tokens
+    output_per_mtok: float
+    cache_read_multiplier: float   # cached input billed at input * m_read
+    cache_write_multiplier: float  # newly cached tokens billed at input * m_write (1.0 for automatic)
+    min_cacheable_tokens: int
+    block_size: int                # cached length rounded down to a multiple of this
+    ttl_seconds: float
+    mode: Literal["automatic", "breakpoint"]
+    source: str                    # URL
+    retrieved: str                 # ISO date
+
+@dataclass(frozen=True)
+class CallCost:
+    prompt_tokens: int; cached_tokens: int; written_tokens: int
+    uncached_tokens: int; output_tokens: int
+    input_cost: float; cache_read_cost: float; cache_write_cost: float
+    output_cost: float; total_cost: float
+
+class PrefixCacheSimulator:
+    def __init__(self, profile: PricingProfile) -> None: ...
+    def reset(self) -> None: ...                        # new episode = cold cache (default)
+    def call(self, prompt_ids: Sequence[int], output_tokens: int, now: float) -> CallCost: ...
 ```
 
-Return explicit terminal status and diagnostic `info`. Reject invalid actions with a clear exception or repository-standard error path; do not silently reinterpret them.
+Semantics:
+
+- `cached = max over live entries of LCP(prompt_ids, entry)`, rounded down to `block_size`, set to 0 if below `min_cacheable_tokens`. Entries expire `ttl_seconds` after their last use.
+- `automatic` mode: after the call, the full prompt becomes a live entry; `written_tokens = prompt − cached`, billed at `m_write` (normally 1.0).
+- `breakpoint` mode: the cache entry is the prompt up to the last configured breakpoint (default: end of the latest history item before the newest observation). Written tokens are billed at `m_write`.
+- `uncached = prompt − cached − written` (never negative). `total = Σ terms`.
+- Cache scope is per episode by default, with an option for warm cross-episode caching of the shared protected prefix. The choice is recorded in run metadata.
+- `TokenCostMeter` has the same interface and returns `total_cost = prompt_tokens` (optionally `+ w_out·output_tokens`) for the token-reward variant.
+
+### 6.5 Agent environment contract (Phase 3)
+
+```python
+class AgentEnv(Protocol):
+    name: str
+    def reset(self, task_id: str, seed: int) -> AgentObservation: ...   # task instruction + first observation
+    def step(self, action_text: str) -> tuple[AgentObservation, float, bool, dict]: ...
+    def task_ids(self, split: Literal["train", "valid", "test"]) -> Sequence[str]: ...
+```
+
+The agent loop (`envs/agent_loop.py`) owns the memory store, calls `memory_policy.decide(state)` before each LLM call, applies the actions, serializes, prices through the cost meter, calls the LLM and steps the environment. Terminal reasons: `success`, `env_done`, `step_limit`, `context_overflow`, `budget_violation`, `fatal_error`.
+
+### 6.6 Controller MDP (Phase 4)
+
+- **State/observation** (versioned schema `features.SCHEMA_VERSION`), per eligible item *i*: normalised age, normalised position, `log(1 + token_count)`, type one-hot, compressed flag, compression gain (tokens saved if compressed, 0 if masked), relevance to the task instruction (lexical/embedding similarity, inference-available), **suffix tokens after *i* / prompt tokens** (the re-billing cost of editing *i*). Global: turn/max_turns, prompt tokens/context limit, last cached fraction, pricing multipliers, plus Phase 7 budget features. All values must be finite and bounded, and the dimension fixed per schema.
+- **Action:** `gate ∈ {0: NO_EDIT, 1: EDIT}`; if EDIT, `a_i ∈ {KEEP, COMPRESS, PRUNE}` per eligible item with masks from `valid_actions`. On NO_EDIT, every item is KEEP.
+- **Log-probability:** `log π(gate) + 1[EDIT] · Σ_i log π(a_i)`.
+- **Transition:** one MDP step per agent turn (controller decision, then one LLM call, then one env step).
+
+### 6.7 Reward (Phase 4)
+
+```text
+r_t      = −λ · cost_t / Z                    (per LLM call)
+r_T     += R_task                             (terminal: ALFWorld success ∈ {0,1}; WebShop score ∈ [0,1])
+cost_t   = CallCost.total_cost  (cache variant)  |  prompt tokens (token variant)
+Z        = mean full-history episode cost on a fixed calibration subset of TRAIN tasks (per env × profile × variant)
+```
+
+- Rewards for context overflow and budget violation: `R_task = 0` plus an optional configured penalty, logged as its own term.
+- No reward for edits in themselves. Each term is logged separately per episode.
+- λ is swept (for example {0.1, 0.3, 1, 3}) for both variants. Frontiers are compared on **real cost** whatever the training cost was.
+
+### 6.8 Episode record (Phases 3–8)
+
+One JSONL line per episode: `method`, `variant`, `knob`, `env`, `split`, `task_id`, `seed`, `llm`, `tokenizer`, `pricing_profile`, `success`, `score`, `turns`, `llm_calls`, `terminal_reason`, `prompt_tokens_total`, `cached_tokens_total`, `written_tokens_total`, `output_tokens_total`, cost per term and total, `edits`, `forced_edits`, `actions_{keep,compress,prune}`, `tokens_removed`, `edit_turns`, `latency_s`, `budget`, `budget_compliant`, `git_commit`, `config_hash`. Per-call details go in a sidecar file. Prompts are stored as hashes plus counts only.
 
 ## 7. Detailed implementation phases
 
-## Phase 0 — Repository reconnaissance and executable setup
+## Phase 0: Repository setup ✅ DONE
+
+Package, `uv` install, multi-stage Docker image, compose, CI (smoke, then ruff, then mypy, then pytest; Docker build, size budget, image smoke), README. The exit gate passed.
+
+## Phase 1: Memory engine and token accounting ✅ DONE
+
+Typed items, archive store, hash-only provenance, KEEP/COMPRESS/PRUNE with structured results and masks, shared serializer, tiktoken and test tokenizers with no silent fallback. The exit gate passed (`tests/test_memory_operations.py`, `tests/test_tokenizer_and_prompt.py`).
+
+## Phase 2: Cache-aware cost model
 
 ### Work
 
-1. Inspect current source, project metadata, supported Python versions, test runner, formatter/linter, Git status, and ignore rules.
-2. Record the actual architecture and reuse existing conventions.
-3. If the repository has no packaging setup, create a minimal `pyproject.toml` and an installable `src/` package. Select compatible versions only as needed; pin the environment after a working baseline is established.
-4. Add ignore rules for virtual environments, secrets, raw/restricted data, checkpoints, caches, and generated results. Do not ignore source configs or small reproducibility metadata.
-5. Add a README with the research question, installation, planned commands, and a clear statement that the DQN result is not yet established.
+1. `cost/pricing.py`: `PricingProfile`, YAML loader with validation (non-negative prices, multipliers ≥ 0, `block_size ≥ 1`, non-empty `source`/`retrieved`).
+2. `configs/pricing/`: at least two contrasting profiles filled in from provider pricing pages, with source and date. Clearly labelled illustrative profiles are allowed for tests only.
+3. `cost/cache_sim.py`: `PrefixCacheSimulator` (§6.4) on token IDs, with a simulated clock for TTL.
+4. `cost/meter.py`: `CacheAwareCostMeter` and `TokenCostMeter` with a common `CostMeter` protocol, plus a per-episode accumulator.
 
-### Exit criteria
+### Required tests (`tests/test_cost_model.py`)
 
-- The package imports in the selected environment.
-- A smoke command runs and exits nonzero on failure.
-- No credentials or restricted data are required for the synthetic path.
-- Existing tests and project conventions remain intact.
+- Cold first call: `cached = 0`, all tokens written or uncached, exact $.
+- Append-only second call: cached equals the previous prompt, floored to the block size.
+- Editing item *i* in a 10-item history: cached length ends exactly at the first changed token. Early edits re-bill more than late edits (monotonic).
+- Prefix below `min_cacheable_tokens` is not cached; block rounding is correct; TTL expiry gives a cold call.
+- `breakpoint` vs `automatic` produce the documented different write and read accounting.
+- Cost terms add up to the total; everything is finite; results are deterministic.
+- `TokenCostMeter` ignores caching.
+- A loader without `source` or `retrieved` is rejected.
 
-## Phase 1 — Memory engine and trustworthy token accounting
+### Exit gate
 
-### Work
+Hand-computed cost tables for a scripted five-call episode match exactly under both profiles. A worked example in the docstring shows that "prune a little every turn" can cost more than "never prune".
 
-1. Implement the typed memory model and archive/active-store behavior.
-2. Implement the tokenizer interface, shared prompt serializer, and exact token metrics.
-3. Implement KEEP, COMPRESS, and PRUNE with structured operation results.
-4. Keep immutable task instructions and current question outside action candidates.
-5. Add provenance logging sufficient to reproduce each transformation without exposing pruned content to the answerer.
-
-### Required tests
-
-- KEEP preserves text, ID, status, and token count.
-- Successful compression changes active text, preserves original text, increments the compression count, and recomputes tokens.
-- Compression that is not shorter or is invalid leaves the original active text untouched and reports a non-success.
-- PRUNE removes the item from serialized active context but retains its archive record.
-- Repeated prune/compress attempts are masked or rejected according to the operation contract.
-- Active token total equals the sum of active item counts.
-- Full prompt count includes system instructions, separators, memory, and current task.
-- System instructions and current task are never candidates for mutation.
-- Token counting is deterministic for a fixed tokenizer/version, including Unicode and empty input.
-
-### Exit criteria
-
-Load a sample history, execute each valid operation, serialize the prompt, and verify exact expected counts. Do not begin RL training before this gate passes.
-
-## Phase 2 — Synthetic tasks and leakage-safe environment
+## Phase 3: Frozen-LLM agent harness
 
 ### Work
 
-1. Generate varied examples for:
-   - Exact fact recall (names, dates, amounts, identifiers).
-   - Multiple simultaneous constraints.
-   - Multi-step dependencies where a prior result matters later.
-   - Distractor-heavy histories with useful facts at varied positions.
-2. Vary values, order, history length, distractors, and templates. Use split-by-template/scenario so test examples are not near-duplicates of training examples.
-3. Keep reference answers and required-fact labels in simulator-only fields.
-4. Use one memory item per message for the first version. Preserve conversation order and stable IDs.
-5. Define a finite one-pass decision sequence. In each step the policy acts on the current eligible item; advancing to the next item is automatic. An action cannot be repeated indefinitely on the same item.
-6. Include current task/question in observations only to the degree it is available at runtime. Do not include the answer, hidden required IDs, or future labels.
-7. Define observable features with documented scales, for example:
-   - age/turn position, normalized;
-   - current item token count and relative cost;
-   - item type encoding;
-   - compression count;
-   - remaining and total active memory tokens relative to budget;
-   - episode progress;
-   - an inference-available relevance estimate from current question and item text;
-   - dependency metadata only where it is genuinely observable.
-8. Document each feature and assert the observation vector has fixed dimension, finite values, and no simulator-only fields.
+1. `llm/backend.py`: `LLMBackend` protocol (`generate(messages, **decoding) → LLMResponse` with text, output tokens and latency). Implementations: OpenAI-compatible HTTP client for a local vLLM server; `llm/mock.py` scripted/regex mock for tests.
+2. `llm/hf_tokenizer.py`: HF tokenizer adapter with `encode`/`count` plus chat-template rendering, identity recorded (model name and revision).
+3. `envs/agent_prompt.py`: `AgentPromptSerializer` (§6.2).
+4. `envs/toy.py`: small deterministic tool environment (for example "look up item IDs, then combine them") where early observations are needed later and others are distractors, with variable-length observations. Runs in CI.
+5. `envs/alfworld.py`, `envs/webshop.py`: adapters to `AgentEnv`, ReAct prompt with fixed few-shot examples, step limits from config. Setup scripts download assets into `data/raw/` (gitignored). Verify licenses, versions and split sizes, and record them.
+6. `envs/agent_loop.py`: the loop of §4.1 with a `MemoryPolicy` hook (always-KEEP by default) and JSONL episode records (§6.8).
+7. Optional extras in `pyproject.toml`: `[envs]`, `[llm]`. Smoke probes for them stay non-fatal.
 
-### Action validity
+### Required tests (`tests/test_agent_harness.py`)
 
-- KEEP and PRUNE are valid for active eligible items.
-- COMPRESS is valid only when the fixed compressor can produce a shorter representation.
-- Pruned items and protected prompt content are never candidates.
-- Return a validity mask; both exploratory and greedy selection must respect it.
-- If no action is valid, terminate with a clear reason rather than looping.
+- The mock LLM plus the toy env complete an episode deterministically. The record schema validates.
+- The serializer puts protected content first; pruning an item removes it from the next prompt; protected content is never an item.
+- Context overflow produces `terminal_reason = context_overflow` with no truncation.
+- Cost is accumulated over every call; cache stats come from the simulator.
+- Leakage: task gold data or expert plans never appear in prompts, items or metadata.
 
-### Budget and episode termination
+### Exit gate
 
-- Define the target budget explicitly as a fraction of original **memory** tokens for controlled experiments.
-- Track full prompt tokens separately; report compliance against the exact budget definition being used.
-- Do not enforce budget by silently deleting or truncating information behind the policy. A DQN episode may end over budget, incur the configured penalty, and be counted as a violation.
-- Enforce the model context limit as a hard answerer safety boundary. If the final prompt does not fit, mark the example as a context/budget failure and do not silently truncate.
-- Episode terminates after all candidates have one decision, when an explicit stop condition is reached, or on a documented fatal environment error.
+- CI runs the toy env end-to-end with the mock LLM.
+- **Competence gate:** the frozen LLM with full history reaches a non-trivial success rate on ALFWorld and WebShop *validation* (record the numbers; if below ~20%, change the model or prompt before Phase 6). Report the full-history cost per episode under each profile.
 
-### Exit criteria
+## Phase 4: Controller MDP and reward
 
-- Random valid policies can execute at least 1,000 short generated episodes without hangs, invalid transitions, NaN/inf observations or rewards, inconsistent token counts, or state leakage between resets.
-- A deliberately constructed task demonstrates that a critical fact can be lost and measured as lost.
-- Tests prove hidden labels do not appear in observations, feature inputs, or answer prompts.
+### Work
 
-## Phase 3 — Reward design and environment verification
+1. `controller/features.py`: the §6.6 feature schema with `SCHEMA_VERSION` and documented scales.
+2. `controller/env.py`: wraps the agent loop as an RL env yielding `(obs, masks)` per turn and taking `(gate, item_actions)`. It enforces masks, rejects invalid actions with a clear error, and terminates with an explicit reason when no action is valid.
+3. `controller/reward.py`: §6.7 for both variants, the `Z` calibration script, and per-term logging.
+4. COMPRESS at most once per item (§6.3).
 
-### Initial reward
+### Required tests (`tests/test_controller_env.py`, `tests/test_no_information_leakage.py`)
 
-Use an explicit, configurable reward with separately logged components:
+- Fixed observation dimension, finite values, no simulator-only fields (checked by constructing tasks with labels and asserting absence).
+- Masks: pruned or protected items are never candidates; COMPRESS is masked when it is unavailable or already applied.
+- Reward accounting: Σ per-term logs = episode return; the terminal step does not bootstrap.
+- Always-KEEP = full-history cost; aggressive PRUNE in the toy env loses a needed fact and fails, and that is measured.
+- The cache-variant cost of "prune one item every turn" > "never prune" on a constructed toy case, while the token-variant cost is lower. This demonstrates H2 mechanically.
 
-```text
-episode return =
-    task_success_reward
-  - token_usage_cost
-  - required_information_loss_penalty
-  - budget_violation_penalty
-  - measured_or_configured_operation_cost
-```
+### Exit gate
 
-The precise numeric weights belong in config and must be recorded per run. Start with a large positive task-success signal and a substantial penalty for losing required information or exceeding budget. Avoid paying the agent merely for pruning; token savings are useful only when considered with task outcome.
+1,000 random-policy toy episodes with no hangs, NaN/inf, invalid transitions, inconsistent token counts or state leakage between resets, plus manual inspection of 5 logged episodes.
 
-For the controlled synthetic environment, the simulator may calculate required-information loss after an operation for training rewards and diagnostics. This label must remain unavailable to the policy at inference. Avoid double-counting task failure and critical-loss penalties without explicitly documenting why both are retained.
+## Phase 5: Baselines
 
-Use a potential-based or otherwise clearly justified per-step shaping scheme if needed for learning. Keep terminal task outcome authoritative and log each reward term separately so reward hacking can be diagnosed. Do not tune reward weights on the final test set.
+### Work
 
-### Verification cases
+`baselines/` implementing the `MemoryPolicy` hook:
 
-- Always KEEP retains all available history and normally uses more tokens.
-- Aggressive PRUNE saves tokens and fails a task when its only required fact is removed.
-- A compression that drops an exact number/date can reduce tokens but must fail the exact task; it must not receive an unearned successful-compression reward.
-- A feasible task can meet budget without forced hidden repairs.
-- Unreachable budgets are reported as violations, not disguised as success.
-- All rewards are finite; terminal transitions have no future-value bootstrap.
+| Baseline | Rule | Knob |
+|---|---|---|
+| Full history | never edit | — |
+| Sliding window | keep the last *K* turns (pairs of thought/action and observation) | *K* |
+| Observation masking | replace observations older than *M* turns with a fixed placeholder; keep thoughts/actions | *M* |
+| LLMLingua | compress observations older than *M* once with LLMLingua-2 at rate *r* (counts compressor latency) | *M*, *r* |
+| Threshold compaction | no edits until the prompt exceeds *T* tokens, then one compaction (compress, then prune the oldest observations down to *T/2*) | *T* |
+| Random valid | random gate and actions under the masks | p(edit) |
 
-### Exit criteria
+Plus a common runner `evaluation/run_eval.py --method … --split valid` writing §6.8 records.
 
-Run at least 1,000 random episodes, verify reward component accounting and termination, and inspect examples manually before implementing DQN training.
+### Required tests (`tests/test_baselines.py`)
 
-## Phase 4 — Baselines and standardized evaluation interface
+Window boundary behaviour; masking leaves protected content and actions untouched; threshold compaction triggers exactly at *T*; every baseline respects masks; records validate. LLMLingua tests are skipped only when the optional extra is not installed, with an explicit skip reason.
 
-All policies must consume equivalent task inputs and return a common result structure. At minimum include method, task ID, seed, memory tokens, total prompt tokens, target budget, compliance, operation counts, final answer, correctness, critical information retained/lost (diagnostic only), latency, and error/skip reason.
+### Exit gate
 
-### Required baselines
+Every baseline × knob runs on a fixed validation subset of both environments and produces valid records and aggregate metrics.
 
-1. **Unconstrained full history:** retain all history and report if it exceeds target budget/context. Do not label it budget-feasible when it is not.
-2. **Budget-feasible full history:** report separately; applicable only when full history fits.
-3. **Sliding window:** add most recent items in reverse chronological order while respecting the budget, then restore chronological order in prompt serialization.
-4. **Heuristic pruning:** rank by the same inference-available relevance/recency/cost information exposed to DQN, retain within budget, and record dropped items.
-5. **Fixed summarization:** summarize all history or chunks with one fixed compressor/model; count summaries and any retained originals. Do not use ground-truth labels.
+## Phase 6: PPO controller
 
-Retrieval is a later optional baseline with its own explicitly documented storage/retrieval budget and should not be presented as directly equivalent without accounting for retrieval costs.
+### Model
 
-### Fairness rules
+- Item encoder: MLP (2 × 128, ReLU) over per-item features, with global features concatenated.
+- Context: mean+max pooling over item embeddings (a 2-layer transformer encoder is an ablation).
+- Heads: gate logits from pooled context; per-item 3-way logits with masked softmax (invalid logits set to −∞, so probability is exactly 0); value from pooled context.
 
-- Same per-example target and fixed prompt overhead for each method.
-- Same tokenizer, serializer, answerer/model version, decoding settings, answer limit, and scorer.
-- Same evaluation examples and final test split.
-- Baseline hyperparameters tuned only on validation data.
-- Include compression/model-call time and cost when applicable.
+### Algorithm
 
-### Exit criteria
+- PPO-clip (ε = 0.2), GAE (γ = 1.0 episodic, λ_GAE = 0.95), entropy bonus on gate and item heads, value loss coefficient 0.5, Adam lr 3e-4, grad-norm clip 0.5, 4 epochs, minibatches over turns. These are starting values for pipeline validation, not tuned results.
+- Rollouts: N parallel episodes per update (vLLM batches LLM calls), stored as `(obs, masks, gate, item_actions, logp, value, reward, done)`.
+- Variants: `cost=cache` and `cost=token`, each over the λ sweep, ≥ 3 seeds.
+- Validation every K updates, deterministic (argmax) policy, on `valid` tasks only. Checkpoint selection on validation success at the target cost region.
+- Checkpoints: weights, optimiser state, config, `SCHEMA_VERSION`, LLM and tokenizer identity, pricing profile, seed, step. Incompatible loads fail with an actionable message.
+- Fail explicitly on non-finite loss, weights or advantages.
 
-Every required baseline runs over a fixed synthetic validation set and produces schema-valid per-example records and aggregate metrics. Unit tests verify sorting, budget boundary behavior, and protected prompt fields.
+### Required tests (`tests/test_ppo.py`)
 
-## Phase 5 — DQN implementation and training
+Shapes and finiteness; masked actions are never sampled (exploration included); log-prob of a joint action = gate + Σ items; the GAE terminal case; checkpoint save → load round-trip; the schema mismatch error; a seeded short run is reproducible on CPU.
 
-### Model and transitions
+### Exit gate
 
-- Feed a fixed-length normalized feature vector to a small feed-forward network, initially two hidden layers of 128 ReLU units and three Q-values.
-- Store `(state, action, reward, next_state, terminated, next_action_mask)` transitions; retaining the next mask prevents bootstrapping from invalid actions.
-- Use a replay buffer, minibatch sampling, a target network, Huber loss, Adam, terminal masking, and optional gradient clipping.
-- Select actions epsilon-greedily only among valid actions.
-- Decay epsilon on a configured, recorded step/episode schedule with a nonzero floor.
-- Seed model initialization, exploration, replay sampling, task generation, and evaluation independently but reproducibly.
-- Save checkpoints with model/optimizer state as appropriate, config, feature schema/version, tokenizer identity, global step, and seed. Reject incompatible checkpoint feature schemas clearly.
+On the toy env, PPO beats random and always-KEEP on the reward with a clear margin over ≥ 3 seeds. A small ALFWorld subset run trains end-to-end, writes metrics and checkpoints, and evaluates from a checkpoint without training code.
 
-### Training loop responsibilities
+## Phase 7: Budget-constrained extension
 
-1. Load and validate configuration.
-2. Generate/sample a training task and reset the environment with a reproducible seed.
-3. Select a valid action; execute it; record transition and reward components.
-4. Train after the configured warmup and batch-size conditions are met.
-5. Update target network on the configured schedule.
-6. Run periodic validation without exploration and without training updates.
-7. Select checkpoints on validation metrics only; never inspect final test results during training.
-8. Save episode-level metrics, action distribution, budget compliance, task outcome, critical-loss diagnostics, and training parameters.
-9. Fail explicitly on non-finite loss/weights or malformed transitions.
+### Work
 
-### Initial debug configuration
+1. `controller/lagrangian.py`: CMDP with soft dollar budget B. Reward for the policy: `R_task − λ_B · cost/Z`. Dual update after each PPO iteration: `λ_B ← clip(λ_B + η_λ (Ĉ_B − B), 0, λ_max)`, with one multiplier per budget bin.
+2. Hard per-call token cap `B_tok`: if the next prompt would exceed `B_tok`, the gate is forced to EDIT (`forced_edits += 1`). If the post-edit prompt still exceeds it, the episode ends with `terminal_reason = budget_violation`.
+3. Budget conditioning: sample B (or B_tok) per episode from a configured range; add `B/Z`, the remaining-budget fraction and the cap headroom to the global features (bump `SCHEMA_VERSION`).
+4. Comparisons: one budget-conditioned policy vs policies trained per budget vs baselines tuned per budget, all at three budgets (for example 25/50/75% of full-history cost, and caps at 25/50/75% of the median full-history final prompt length).
 
-Use small, editable config values such as 1,000 training episodes, at most 30 items per episode, an action horizon no longer than the number of eligible items, a 50% memory-token budget, 128x128 hidden layers, learning rate 0.0003, gamma 0.99, batch size 64, replay capacity 50,000, epsilon 1.0 to 0.05, and target update every 500 training steps. These are starting values for pipeline validation, not scientific recommendations or evidence of adequate training.
+### Required tests (`tests/test_lagrangian.py`)
 
-### DQN tests
+λ rises when cost is over budget and falls (to a floor of 0) when it is under; forced-edit logic; a budget violation is recorded rather than hidden; budget features stay within bounds.
 
-- Q-network input/output shapes and finite outputs.
-- Replay buffer capacity, sampling, and deterministic seeded behavior.
-- Epsilon-greedy never selects masked actions, including exploration.
-- Target computation handles terminal transitions and invalid next actions.
-- A minimal training run saves and reloads a compatible checkpoint.
-- Incompatible feature schema/configuration fails with an actionable error.
+### Exit gate
 
-### Exit criteria
+Budget compliance ≥ 95% at the three validation budgets, or the shortfall is reported with analysis. H3 behaviour plots (edit frequency and size under a hard cap) are produced for both variants.
 
-A small run completes end-to-end, writes reproducible metrics/checkpoints, and can be evaluated without training code or access to simulator-only labels.
+## Phase 8: Final evaluation
 
-## Phase 6 — Learning sanity checks and controlled test
+### Protocol
 
-Run and compare:
+1. Freeze configs, checkpoints and knob grids from validation. Record them before touching test data.
+2. Run every method × knob × (budget) × pricing profile × seed on the **same** test tasks (ALFWorld `valid_unseen`; WebShop test split as verified in Phase 3).
+3. Baselines don't depend on prices, so their stored per-call token traces can be re-priced under every profile without re-running. A PPO policy trained under profile A and re-priced under profile B is the **transfer** condition and is labelled as such; the main result for profile B uses policies trained under B.
+4. Aggregate: §8 metrics of `prd.md`, paired bootstrap CIs over tasks, per-seed variation.
+5. Plots: success vs real cost (Pareto, main), success vs tokens, cache-hit rate, edits per episode and edit timing, budget compliance.
+6. Cost-model validation: compare simulated cached tokens with vLLM prefix-cache hit metrics. The optional paid-API check (a small number of episodes, provider-reported cached-token usage vs simulator) runs only with explicit user approval and a recorded spending cap.
 
-- Random valid policy.
-- Always KEEP control.
-- Aggressive PRUNE control.
-- Trained DQN.
-- Required non-RL baselines.
+### Positive-claim criteria (fix them on validation before seeing test)
 
-Use separate train, validation, and test sets. Split by template/scenario (not just random rows) to measure generalization. Validate on new values, longer histories, varied critical-fact positions, and new distractor patterns.
+- **H1 supported:** at the success level of full history (within 3 pp), cache-aware PPO's cost is lower than every baseline's frontier at that success, with a paired CI excluding 0.
+- **H2 supported:** on at least one environment × profile, the token-reward controller has fewer input tokens and higher real cost than cache-aware PPO or full history, with a CI.
+- **H3 supported:** the cache-aware controller has significantly fewer edits per episode and more tokens removed per edit than the token-reward controller.
+- **H4 supported:** Phase 7 gate on test.
 
-Run at least five independent training seeds for the first reported DQN result when resources permit. Report per-seed results and variation; do not hide unstable runs. If compute limits prevent five, report the exact number and treat conclusions as preliminary.
+Otherwise report the measured outcome and narrow the conclusion. Do not change thresholds after seeing test results.
 
-Inspect:
+## Phase 9: Analysis, ablations and report
 
-- Reward curve and each reward component.
-- Validation task success and prompt-token use.
-- Budget violation rate and forced/invalid-action counts.
-- KEEP/COMPRESS/PRUNE distribution and policy collapse.
-- Critical fact loss and compression-induced answer errors.
-- Accuracy with full history versus managed history.
-- Failure attribution: memory loss, bad compression, answerer failure, scoring error, or environment bug.
-
-Never use final test performance to choose a checkpoint, features, reward weights, or hyperparameters.
-
-## Phase 7 — Final evaluation protocol
-
-### Metrics (report mean and suitable uncertainty)
-
-| Metric | Definition |
-|---|---|
-| Task success | Correct examples / eligible examples; state scorer and excluded/error examples |
-| Memory-token reduction | `1 - managed_memory_tokens / original_memory_tokens` |
-| Prompt-token reduction | Same calculation using complete serialized input tokens |
-| Budget compliance | Fraction of examples whose measured prompt meets the stated budget |
-| Critical information retention | Required facts still answerable/present; diagnostic for labeled synthetic data |
-| Cost per successful task | Total measured inference/compression cost divided by successful tasks |
-| End-to-end latency | Controller + compression + answerer time, with measurement boundary stated |
-| Action distribution | Counts/fractions by action and failed/unavailable compression |
-
-Do not treat critical-item retention as a replacement for end-task accuracy. Report zero-success cost as undefined/infinite with an explicit convention, not as zero.
-
-### Budget sweep and statistical comparison
-
-- Evaluate at minimum three target memory budgets, for example 25%, 50%, and 75% of original memory tokens, plus unconstrained full history as a reference.
-- Run every method on the same test examples at each budget.
-- Plot task success against **actual total prompt tokens**, and show target budget/compliance separately.
-- Use paired comparisons over shared examples. Report confidence intervals; where feasible, bootstrap over examples and separately show variation across training seeds.
-- Report all results, including failures and budget misses. Do not claim a win based only on lower token count.
-
-### Evidence needed for a positive practical claim
-
-Pre-register/select the claim threshold on validation data before opening final test results. A reasonable initial interpretation is:
-
-- “Quality preserved”: DQN's task success is no more than 3 percentage points below unconstrained full history at the evaluated budget, with uncertainty reported.
-- “Improves the trade-off”: at matched actual prompt-token usage, DQN exceeds the strongest non-RL baseline on task success with a paired confidence interval supporting a positive difference; or it uses fewer tokens at statistically indistinguishable success.
-- If these conditions are not met, report the measured result and narrow the conclusion. Do not alter thresholds after seeing test outcomes.
-
-These thresholds are proposed interpretation criteria, not guaranteed model performance.
-
-## Phase 8 — External benchmark transfer
-
-Proceed only after the synthetic evaluation passes its gates.
-
-1. Verify the current LoCoMo release, dataset license/terms, splits, scoring, dependencies, and any restrictions. Record the exact version/source and checksums when permitted.
-2. Keep benchmark raw files outside source control unless the license explicitly permits redistribution.
-3. Write an adapter from benchmark records to the standard task format; preserve turn ordering and metadata required by official scoring.
-4. Use one memory unit per message initially unless the benchmark structure requires another granularity; document any transformation.
-5. Do not expose reference answers or annotations to the controller, compressor, or answerer.
-6. Use the official evaluation/scorer when possible and validate a sample manually.
-7. Initially evaluate zero-shot transfer from synthetic training. If any benchmark-specific training/fine-tuning is later done, report it as a separate condition with allowed splits.
-8. Include the exact same prompt/token budget and answerer controls across methods.
-9. Report that conversational QA results do not on their own prove general multi-step-agent performance.
-
-MemoryAgentBench and LongMemEval are optional follow-on candidates. Assess fit and protocol before adding them; more benchmarks do not compensate for an unreliable primary evaluation.
-
-## Phase 9 — Research analysis and final deliverables
-
-### Related work and ablations
-
-Review Mem-α, Memory-R1, and the chosen benchmark papers/repositories. Compare problem framing, actions, reward, budget, training regime, baselines, and evaluation before making novelty claims.
-
-After the main result is reliable, run controlled ablations where resources allow:
-
-- Remove COMPRESS (KEEP/PRUNE only).
-- Remove critical-loss reward term.
-- Remove relevance or recency feature one at a time.
-- Change budget.
-- Change compression method.
-- Change training data/episode count.
-
-Hold other settings fixed as much as possible and report the exact changed factor.
-
-### Final artifacts
-
-1. Source code and tests for memory engine, environment, policies, DQN, and evaluation.
-2. Configs and reproducibility instructions.
-3. Training logs, checkpoint metadata, and learning curves.
-4. Per-example predictions, token counts, success labels, latency/cost where measured.
-5. Aggregate tables and task-success-versus-prompt-token plot.
-6. Ablation and failure analyses.
-7. Research report covering question, prior work, methods, baselines, protocol, results, limitations, and conclusion.
-8. A clear statement of dataset/model versions and any restrictions.
+- Ablations (one factor at a time): no gate (flat per-item); no suffix-tokens feature; no COMPRESS; transformer context encoder; pricing-profile transfer (train A, test B); a different frozen LLM; cold vs warm cross-episode cache.
+- Failure analysis: overflow, budget violation, step limit, wrong action after a relevant observation was pruned.
+- Related-work and novelty re-check (TRACER, LRE, TokenPilot, AKV, and any newer work): compare actions, objective, reward, training, baselines and evaluation.
+- Deliverables: code and tests, configs, logs, checkpoint metadata, per-episode records, one-command figure regeneration, the report, slides and a demo episode visualisation.
 
 ## 8. Cross-cutting edge-case checklist
 
-The implementation and tests must explicitly handle:
+**Memory and prompts:** empty history; one-item history; duplicate texts with distinct IDs; very long single observations; Unicode; a compressor returning empty, unchanged or longer text; pruning an item that a later step depends on; chat-template tokens counted in cost; tokenizer mismatch between cost model and LLM (must fail).
 
-### Memory and operations
+**Cache model:** first call; identical consecutive prompts; an edit at the first token after the protected prefix; a prefix below the minimum; block boundary ±1; TTL expiry mid-episode; a breakpoint placed after an edited item; the output tokens of call *k* becoming part of the prompt of call *k+1* (they are cacheable only if the provider caches them; follow the profile).
 
-- Empty history, empty item text, one-item history, duplicate text with distinct IDs.
-- Unicode, long numeric identifiers, dates, negative/decimal values, punctuation, and exact constraints.
-- A compressor returning empty, unchanged, longer, malformed, or semantically lossy output.
-- Repeated compression and repeated prune attempts.
-- Multiple items whose combined tokens exceed budget although each item fits individually.
-- A critical fact repeated in multiple items: losing one copy is not necessarily losing the fact.
-- Dependencies between facts/intermediate tool results; do not claim dependency preservation unless tested.
-- Stable archive versus active prompt separation.
+**Environment and learning:** no eligible items (first turn); all items pruned; the step limit reached; LLM produces an invalid action; LLM server error (retry policy, recorded); reset clears the store, cache simulator and labels; masks all-invalid apart from the gate; NaN in features or advantages; reward incentives to prune everything or keep everything; leakage through metadata, IDs, filenames, caches or logs.
 
-### Budgets and prompts
-
-- Fixed prompt alone exceeds budget/context limit.
-- Exact equality at token budget and one-token overage.
-- Tokenizer/version mismatch between controller, prompt builder, and answerer.
-- Prompt formatting adds tokens beyond the sum of item tokens.
-- Full history does not fit and must be reported as over budget.
-- No silent truncation, hidden fallback tokenizer, or excluded failed examples.
-
-### Environment and learning
-
-- No valid compression action; no remaining eligible actions; already-satisfied budget.
-- Unreachable budget and all-pruned state.
-- Reset after terminal state without retaining previous episode inventory or labels.
-- Terminal transition masking and finite horizon.
-- All-invalid action mask, invalid index, NaN/inf feature or reward.
-- Reproducibility under fixed seeds and documented nondeterminism on hardware.
-- Reward incentives that favor deleting everything or keeping everything.
-- Data leakage through metadata, candidate order, task templates, caches, filenames, or logs.
-
-### Evaluation and benchmark
-
-- Empty result set, answerer exception, missing provider usage, zero successful tasks.
-- Different token counts or prompt templates across methods.
-- Test-set reuse during model selection.
-- Benchmark split/license changes or missing official scorer.
-- LLM judge disagreement and answerer stochasticity.
-- Latency/cost accounting that excludes compression or controller overhead.
+**Evaluation:** zero successes (cost per success = ∞); different prompt layouts across methods (forbidden); test reuse during selection (forbidden); missing provider usage (mark unavailable); LLM nondeterminism at temperature 0 (record and report).
 
 ## 9. Project-wide success criteria
 
-The prototype is **implementation-complete** when all of the following hold:
+The prototype is **implementation-complete** when:
 
-1. Memory operations and prompt construction satisfy the invariants in Section 4 and focused tests pass.
-2. Synthetic episodes are reproducible, finite, and leakage-tested.
-3. Random, control, baseline, and DQN policies use the same task/result interfaces.
-4. The training pipeline saves compatible checkpoints and validation metrics.
-5. The final evaluation can run all methods over the same held-out examples and budget sweep.
-6. Per-example records allow aggregate metrics and plots to be regenerated.
-7. Failure cases, limitations, versions, and unmeasured costs are disclosed.
+1. Memory, cost model, harness and controller satisfy §4 invariants, and focused tests pass in CI (no GPU needed).
+2. Episodes are finite, reproducible and leakage-tested on the toy env and both benchmarks.
+3. All baselines and both PPO variants use the same harness, records and runner.
+4. Training saves compatible checkpoints and validation metrics.
+5. Final evaluation runs every method on the same test tasks, budgets, profiles and seeds.
+6. Figures and tables regenerate from per-episode records with one command.
+7. Failures, limitations, versions and unmeasured costs are disclosed.
 
-The research hypothesis is **supported** only if the predeclared trade-off criteria in Phase 7 are met on held-out evaluation with uncertainty reported. Otherwise the project can still be complete, but conclusions must accurately say the result was negative, mixed, or inconclusive.
+The research hypotheses count as **supported** only if the Phase 8 criteria are met on held-out data with uncertainty reported.
 
-## 10. Suggested execution order and milestone gates
+## 10. Milestone gates
 
 | Milestone | Deliverable | Must pass before proceeding |
 |---|---|---|
-| M0: inspect/setup | Runnable package and smoke test | Existing project state preserved |
-| M1: memory engine | Typed items, tokenizer, prompt builder, operations | Memory/token tests pass |
-| M2: simulator | Synthetic task generator and finite environment | 1,000 random episodes; leakage tests pass |
-| M3: baselines | Standardized full-history, window, heuristic, summarizer | Same-example/budget evaluation works |
-| M4: DQN | Training loop, replay, checkpoints, logs | Small reproducible train/evaluate run |
-| M5: controlled study | Seeds, test split, budget sweep, report | No test leakage; metrics reproducible |
-| M6: transfer | Benchmark adapter and evaluation | License/protocol validated |
-| M7: research report | Results, ablations, failures, limitations | Claims match measured evidence |
+| M0 ✅ | Runnable package, Docker, CI | Smoke + CI green |
+| M1 ✅ | Memory engine and token accounting | Phase 1 tests |
+| M2 | Cache cost model | Hand-computed cost cases |
+| M3 | Agent harness and competence gate | Toy env in CI; non-trivial full-history success |
+| M4 | Controller MDP and reward | 1,000 random episodes; leakage tests |
+| M5 | Baselines | All baselines on validation, both envs |
+| M6 | PPO (cache and token variants) | Beats random/KEEP on toy; ALFWorld subset end-to-end |
+| M7 | Budget-constrained extension | ≥ 95% compliance or a documented gap |
+| M8 | Final evaluation | Same-task, multi-seed, multi-profile results |
+| M9 | Report | Claims match measured evidence |
 
-Prioritize correctness of the environment and fair evaluation over network complexity or number of benchmarks. If time is limited, complete M0–M5 with a high-quality synthetic study before attempting M6.
+Phases 2 and 3 can proceed in parallel, as can 4 and 5. If time runs short, finish M0–M6 and M8 on ALFWorld only, then add WebShop and Phase 7.
 
-## 11. Recommended developer workflow and commands
-
-Use commands consistent with the repository. If none exist, provide equivalents for:
+## 11. Developer workflow and commands
 
 ```bash
+python -m memory_rl.smoke
+ruff check .
+mypy
 python -m pytest
-python -m memory_rl.controller.train --config configs/dqn.yaml
-python -m memory_rl.evaluation.run_eval --config configs/evaluation.yaml
 ```
 
-Expose configuration through files/CLI rather than editing source constants. Training and evaluation commands should:
+Planned entry points (they don't exist until their phase lands):
 
-- Return nonzero on invalid config or failed runs.
-- Log config, seed, software/model/tokenizer versions, and output paths.
-- Avoid overwriting existing results without explicit opt-in.
-- Support a small smoke mode for CI and local development.
-- Keep raw benchmark data and secrets external to the repository.
+```bash
+python -m memory_rl.cost.cache_sim --demo                                      # Phase 2
+python -m memory_rl.envs.agent_loop --env toy --llm mock                       # Phase 3
+python -m memory_rl.evaluation.run_eval --config configs/baselines.yaml        # Phase 5
+python -m memory_rl.controller.train --config configs/ppo.yaml                 # Phase 6
+python -m memory_rl.controller.train --config configs/lagrangian.yaml          # Phase 7
+python -m memory_rl.evaluation.run_eval --config configs/evaluation.yaml       # Phase 8
+python -m memory_rl.evaluation.plots --results results/<run>                   # Phase 8
+```
 
-## 12. Explicit non-goals for the first version
+Commands must: return nonzero on invalid config or failure; log config, seeds, versions and output paths; refuse to overwrite results without an explicit flag; support a `--smoke` mode for CI; read API keys only from environment variables.
 
-- A production memory service or multi-user persistence layer.
-- Autonomous tool execution or modification of external systems.
-- Training an LLM to generate summaries as part of the DQN.
-- Retrieval mixed into the first controller's action space.
-- Claims of universal benchmark or real-world generalization.
-- Claiming that lower token count alone demonstrates success.
-- Hardcoding hypothetical scores or treating suggested hyperparameters as established optima.
+## 12. Explicit non-goals
 
+- Training or fine-tuning the LLM.
+- A production memory service or UI.
+- Retrieval in the controller's action space.
+- Paid-API usage during training, or without explicit approval.
+- Claiming lower token count alone as success.
+- Hardcoded prices or scores; treating starting hyperparameters as tuned optima.

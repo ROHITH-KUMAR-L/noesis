@@ -149,7 +149,9 @@ def _t_fact_amount(rng: random.Random) -> _Scenario:
 
 def _t_fact_ticket(rng: random.Random) -> _Scenario:
     ticket = rng.choice(_IDS)
-    fact = _Entry(f"Ticket {ticket} is assigned to the team.", MemoryType.FACT, required_text=ticket)
+    fact = _Entry(
+        f"Ticket {ticket} is assigned to the team.", MemoryType.FACT, required_text=ticket
+    )
     entries = _interleave(rng, [fact], rng.randint(2, 5))
     return _scenario(entries, "Which ticket is assigned to the team?", ticket)
 

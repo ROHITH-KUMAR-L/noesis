@@ -16,35 +16,35 @@ from memory_rl.memory import SerializedPrompt
 #: question -> ordered extraction patterns. ``{0}`` is replaced with the previous
 #: capture (escaped), which is how dependent facts are resolved.
 _SPECS: dict[str, tuple[str, ...]] = {
-    "What is the user's name?": (r"My name is ([^.\n]+)",),
-    "When is the deployment window?": (r"The deployment window is ([^.\n]+)",),
-    "What is the invoice total?": (r"The invoice total is ([^.\n]+)",),
+    "What is the user's name?": (r"My name is (.+?)\.?$",),
+    "When is the deployment window?": (r"The deployment window is (.+?)\.?$",),
+    "What is the invoice total?": (r"The invoice total is (.+?)\.?$",),
     "Which ticket is assigned to the team?": (r"Ticket ([A-Z0-9-]+) is assigned to the team",),
     "Which gate and what time does maintenance start?": (
-        r"The maintenance gate is ([^.\n]+)",
-        r"The maintenance starts at ([^.\n]+)",
+        r"The maintenance gate is (.+?)\.?$",
+        r"The maintenance starts at (.+?)\.?$",
     ),
     "Who is the customer and what is their ID?": (
-        r"The customer is ([^.\n]+)",
-        r"The customer ID is ([^.\n]+)",
+        r"The customer is (.+?)\.?$",
+        r"The customer ID is (.+?)\.?$",
     ),
     "Who owns the maintenance window and when is it?": (
-        r"The maintenance window owner is ([^.\n]+)",
-        r"The maintenance window is ([^.\n]+)",
+        r"The maintenance window owner is (.+?)\.?$",
+        r"The maintenance window is (.+?)\.?$",
     ),
     "What is the amount on the fetched invoice?": (
         r"fetched invoice ([A-Z0-9-]+)",
-        r"Invoice {0} has amount ([^.\n]+)",
+        r"Invoice {0} has amount (.+?)\.?$",
     ),
     "What is the contact email for the placed order?": (
         r"placed order ([A-Z0-9-]+)",
-        r"The contact email for {0} is ([^.\n]+)",
+        r"The contact email for {0} is (.+?)\.?$",
     ),
     "Who owns the fetched ticket?": (
         r"fetched ticket ([A-Z0-9-]+)",
-        r"Ticket {0} is owned by ([^.\n]+)",
+        r"Ticket {0} is owned by (.+?)\.?$",
     ),
-    "What is the vault code?": (r"The vault code is ([^.\n]+)",),
+    "What is the vault code?": (r"The vault code is (.+?)\.?$",),
 }
 
 
@@ -65,9 +65,15 @@ class SyntheticExactMatchAnswerer:
                 if previous is None:
                     return UNKNOWN_ANSWER
                 pattern = pattern.replace("{0}", re.escape(previous))
-            match = re.search(pattern, prompt.memory_text)
+            match = re.search(pattern, prompt.memory_text, flags=re.MULTILINE)
             if match is None:
                 return UNKNOWN_ANSWER
             previous = match.group(1).strip()
             captures.append(previous)
-        return ", ".join(captures) if captures else UNKNOWN_ANSWER
+        if not captures:
+            return UNKNOWN_ANSWER
+        # A dependency chain only resolves an intermediate key; the answer is the
+        # final capture. Multi-constraint questions report every capture.
+        if any("{0}" in pattern for pattern in patterns):
+            return captures[-1]
+        return ", ".join(captures)

@@ -9,6 +9,7 @@ requires-python = ">=3.11"
 dependencies = [
     "tiktoken>=0.14",
     "numpy>=1.26",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -16,6 +17,7 @@ dev = [
     "pytest>=8.3",
     "mypy>=1.13",
     "ruff>=0.8",
+    "types-PyYAML",
 ]
 
 [project.scripts]

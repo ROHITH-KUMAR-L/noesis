@@ -1,0 +1,19 @@
+# Anthropic Claude Sonnet 5.5, 5-minute cache_control breakpoints.
+# $2 input / $2.50 5m write / $0.10 cache hit / $10 output per MTok.
+name: anthropic-sonnet-5-5
+model: claude-sonnet-5-5
+input_per_mtok: 2.00
+output_per_mtok: 10.00
+cache_read_multiplier: 0.05     # "0.05x the base input price" (footnote 2)
+cache_write_multiplier: 1.25    # 5m cache writes: $2.50 / MTok
+min_cacheable_tokens: 512       # prompt-caching docs; re-check before reporting
+block_size: 1                   # hits land exactly on breakpoint positions
+ttl_seconds: 300                # default 5-minute TTL, refreshed on read
+mode: breakpoint
+source: https://platform.claude.com/docs/en/about-claude/pricing
+retrieved: "2026-11-04"
+notes: >-
+  Breakpoint mode approximates cache_control: entries are written at explicit
+  breakpoints and a read hits only when a whole entry is a prefix of the prompt.
+  The 20-block lookback window and the 4-breakpoint limit are modelled as a
+  maximum of 4 breakpoints per call.

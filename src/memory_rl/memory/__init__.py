@@ -22,6 +22,7 @@ from memory_rl.memory.prompt import PromptSerializer, SerializedPrompt
 from memory_rl.memory.store import MemoryStore, ProvenanceRecord
 from memory_rl.memory.tokenizer import (
     DEFAULT_TOKENIZER_SPEC,
+    EncodingTokenizer,
     TestTokenizer,
     TiktokenTokenizer,
     Tokenizer,
@@ -33,6 +34,7 @@ __all__ = [
     "DEFAULT_TOKENIZER_SPEC",
     "SIMULATOR_ONLY_LABELS",
     "Compressor",
+    "EncodingTokenizer",
     "IdentityCompressor",
     "MemoryItem",
     "MemoryStatus",

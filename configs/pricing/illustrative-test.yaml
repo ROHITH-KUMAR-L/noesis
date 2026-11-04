@@ -1,0 +1,15 @@
+# ILLUSTRATIVE ONLY - round numbers for unit tests and hand-computed examples.
+# Never use this profile for a reported result.
+name: illustrative-test
+model: none
+input_per_mtok: 1.00
+output_per_mtok: 4.00
+cache_read_multiplier: 0.10
+cache_write_multiplier: 1.25
+min_cacheable_tokens: 10
+block_size: 1
+ttl_seconds: 300
+mode: breakpoint
+source: illustrative (not a provider price)
+retrieved: "2026-11-04"
+illustrative: true

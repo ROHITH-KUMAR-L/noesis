@@ -13,10 +13,13 @@ import re
 from collections.abc import Sequence
 
 from memory_rl.envs.agent_prompt import ChatMessage
+from memory_rl.envs.toy import key_note
 from memory_rl.llm.backend import LLMResponse
 
 _TASK = re.compile(r"Task: Submit the access keys for projects: ([^.\n]+)\.")
 _KEY = re.compile(r"access key(?::| is) (K-\d{4})")
+_NOTE = re.compile(r"shows the key for ([a-z]+): (K-\d{4})")
+_RECORD = re.compile(r"Record (REC-\d{4}) \(project ([a-z]+), access credentials\)")
 
 
 class ScriptedKeyHuntLLM:
@@ -45,18 +48,32 @@ class ScriptedKeyHuntLLM:
         projects = [p.strip() for p in tasks[-1].split(",") if p.strip()]
         history = [m.content for m in messages[2:]]
 
-        keys: dict[str, str] = {}
-        for content in history:
-            for project in projects:
-                if f"(project {project}, access credentials)" in content:
-                    match = _KEY.search(content)
-                    if match:
-                        keys[project] = match.group(1)
+        noted: dict[str, str] = {}
+        for message in messages[2:]:
+            if message.role == "assistant":
+                for project, key in _NOTE.findall(message.content):
+                    noted[project] = key
+        new_notes: list[str] = []
+        keys = dict(noted)
+        for message in messages[2:]:
+            if message.role != "user":
+                continue
+            header = _RECORD.search(message.content)
+            match = _KEY.search(message.content)
+            if header and match and header.group(2) in projects:
+                project = header.group(2)
+                if project not in keys:
+                    keys[project] = match.group(1)
+                    new_notes.append(key_note(header.group(1), project, match.group(1)))
+        note = " ".join(new_notes) + " " if new_notes else ""
 
         pending = [p for p in projects if p not in keys]
         if not pending:
             found = ", ".join(keys[p] for p in projects)
-            return f"Thought: I have every key I need. I will submit.\nAction: submit[{found}]"
+            return (
+                f"Thought: {note}I have every key I need. I will submit.\n"
+                f"Action: submit[{found}]"
+            )
 
         project = pending[0]
         listing = re.compile(rf"(REC-\d{{4}}) \| {re.escape(project)} \| access credentials")
@@ -65,10 +82,11 @@ class ScriptedKeyHuntLLM:
             if match:
                 record = match.group(1)
                 return (
-                    f"Thought: {record} holds the credentials for {project}. I will open it.\n"
+                    f"Thought: {note}{record} holds the credentials for {project}. "
+                    "I will open it.\n"
                     f"Action: open[{record}]"
                 )
         return (
-            f"Thought: I need the key for {project}. I will search for its records.\n"
+            f"Thought: {note}I need the key for {project}. I will search for its records.\n"
             f"Action: search[{project}]"
         )

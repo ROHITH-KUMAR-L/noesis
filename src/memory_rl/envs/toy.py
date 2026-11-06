@@ -61,20 +61,9 @@ SYSTEM_PROMPT = (
     "Use only information you have seen in this conversation."
 )
 
-FEW_SHOT = """Example (a different task):
-Task: Submit the access keys for projects: zephyr.
-Thought: I need the key for zephyr. I will search for its records.
-Action: search[zephyr]
-Observation: Records for zephyr:
-- REC-0001 | zephyr | budget report | revised last quarter
-- REC-0002 | zephyr | access credentials | restricted
-Thought: REC-0002 holds the credentials for zephyr. I will open it.
-Action: open[REC-0002]
-Observation: Record REC-0002 (project zephyr, access credentials)
-access key: K-0000
-Thought: I have every key I need. I will submit.
-Action: submit[K-0000]
-Observation: Submission accepted."""
+#: Few-shot example projects are disjoint from task projects (no key confusion).
+EXAMPLE_PROJECTS = ("zephyr", "wren", "vortex", "xenon")
+EXAMPLE_TASK_ID = "keyhunt-example-0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,11 +107,17 @@ def _prose(rng: random.Random, sentences: int) -> str:
     return " ".join(rng.choice(_FILLER) for _ in range(sentences))
 
 
-def generate_task(task_id: str, *, min_keys: int = 2, max_keys: int = 4) -> KeyHuntTask:
+def generate_task(
+    task_id: str,
+    *,
+    min_keys: int = 3,
+    max_keys: int = 6,
+    pool: Sequence[str] = PROJECTS,
+) -> KeyHuntTask:
     rng = _rng_for(task_id)
     k = rng.randint(min_keys, max_keys)
-    projects = tuple(rng.sample(PROJECTS, k))
-    others = [p for p in PROJECTS if p not in projects]
+    projects = tuple(rng.sample(list(pool), k))
+    others = [p for p in pool if p not in projects]
     used_ids: set[str] = set()
     used_keys: set[str] = set()
     records: list[_Record] = []
@@ -141,22 +136,22 @@ def generate_task(task_id: str, *, min_keys: int = 2, max_keys: int = 4) -> KeyH
         credential_ids.append(cred_id)
         header = f"Record {cred_id} (project {project}, access credentials)"
         if rng.random() < 0.5:
-            body = f"access key: {key}\n{_prose(rng, rng.randint(4, 8))}"
+            body = f"access key: {key}\n{_prose(rng, rng.randint(6, 11))}"
         else:
             body = (
-                f"{_prose(rng, rng.randint(2, 5))} For this project the current access key "
-                f"is {key}, rotated at the last audit. {_prose(rng, rng.randint(2, 5))}"
+                f"{_prose(rng, rng.randint(3, 6))} For this project the current access key "
+                f"is {key}, rotated at the last audit. {_prose(rng, rng.randint(3, 6))}"
             )
         records.append(_Record(cred_id, project, "access credentials", f"{header}\n{body}"))
 
         lines = [f"- {cred_id} | {project} | access credentials | restricted"]
-        for _ in range(rng.randint(5, 9)):
+        for _ in range(rng.randint(6, 10)):
             rid = _record_id(rng, used_ids)
             topic = rng.choice(_TOPICS)
-            text = f"Record {rid} (project {project}, {topic})\n{_prose(rng, rng.randint(4, 9))}"
+            text = f"Record {rid} (project {project}, {topic})\n{_prose(rng, rng.randint(6, 12))}"
             records.append(_Record(rid, project, topic, text))
             lines.append(f"- {rid} | {project} | {topic} | {_prose(rng, 2).lower()}")
-        for _ in range(rng.randint(3, 6)):  # cross-listed noise from other projects
+        for _ in range(rng.randint(4, 7)):  # cross-listed noise from other projects
             rid = _record_id(rng, used_ids)
             other = rng.choice(others)
             topic = rng.choice(_TOPICS)
@@ -178,6 +173,36 @@ def generate_task(task_id: str, *, min_keys: int = 2, max_keys: int = 4) -> KeyH
     )
 
 
+def key_note(record_id: str, project: str, key: str) -> str:
+    """How the agent writes a key it has read into its own thought (scratchpad)."""
+    return f"{record_id} shows the key for {project}: {key}."
+
+
+def render_example(task: KeyHuntTask) -> str:
+    """A complete, correct trajectory for ``task`` in the ReAct format."""
+    lines = [f"Example (a different task):\n{task.instruction}"]
+    note = ""
+    for project, cred_id in zip(task.projects, task.credential_ids, strict=True):
+        listing = next(text for p, text in task.listings if p == project)
+        record = next(r for r in task.records if r.record_id == cred_id)
+        lines += [
+            f"Thought: {note}I need the key for {project}. I will search for its records.",
+            f"Action: search[{project}]",
+            f"Observation: {listing}",
+            f"Thought: {cred_id} holds the credentials for {project}. I will open it.",
+            f"Action: open[{cred_id}]",
+            f"Observation: {record.text}",
+        ]
+        key = task.keys[task.projects.index(project)]
+        note = key_note(cred_id, project, key) + " "
+    lines += [
+        f"Thought: {note}I have every key I need. I will submit.",
+        f"Action: submit[{', '.join(task.keys)}]",
+        "Observation: Submission accepted.",
+    ]
+    return "\n".join(lines)
+
+
 _ACTION = re.compile(r"Action:\s*(search|open|submit)\[(.*?)\]", re.IGNORECASE | re.DOTALL)
 
 
@@ -195,13 +220,14 @@ class KeyHuntEnv:
 
     name = "toy-keyhunt"
 
-    def __init__(self, *, min_keys: int = 2, max_keys: int = 4, step_slack: int = 4) -> None:
+    def __init__(self, *, min_keys: int = 3, max_keys: int = 6, step_slack: int = 4) -> None:
         if not 1 <= min_keys <= max_keys:
             raise ValueError("need 1 <= min_keys <= max_keys")
         self.min_keys = min_keys
         self.max_keys = max_keys
         self.step_slack = step_slack
         self._task: KeyHuntTask | None = None
+        self._few_shot: str | None = None
         self._steps = 0
         self._done = False
         self.max_steps = 2 * max_keys + 1 + step_slack
@@ -215,7 +241,10 @@ class KeyHuntEnv:
         return SYSTEM_PROMPT
 
     def few_shot(self) -> str:
-        return FEW_SHOT
+        if self._few_shot is None:
+            example = generate_task(EXAMPLE_TASK_ID, min_keys=2, max_keys=2, pool=EXAMPLE_PROJECTS)
+            self._few_shot = render_example(example)
+        return self._few_shot
 
     @property
     def task(self) -> KeyHuntTask:

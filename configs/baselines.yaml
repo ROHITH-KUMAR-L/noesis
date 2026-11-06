@@ -1,0 +1,16 @@
+# Phase 5: every baseline x knob on the toy validation split (mock LLM).
+env: toy
+llm: mock
+split: valid
+tasks: 60
+seeds: [0, 1, 2]          # env + mock are deterministic; seeds matter for random/PPO
+profiles: [anthropic-sonnet-5-5, openai-gpt-5-4, openai-gpt-6-1-sol]
+tokenizer: o200k_base
+out: results/baselines_valid
+methods:
+  full_history: null
+  sliding_window: [1, 2, 3, 4]
+  obs_masking: [0, 1, 2, 3]
+  threshold_compaction: [2500, 3000, 3500, 4000]
+  cadoc_rule: [1, 2, 3]
+  random: [0.1, 0.3]

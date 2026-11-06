@@ -21,7 +21,10 @@ import json
 import sys
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from memory_rl.cost import (
     CacheAwareCostMeter,
@@ -63,7 +66,7 @@ class InvalidDecisionError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class LoopConfig:
-    context_limit_tokens: int = 8192
+    context_limit_tokens: int = 16384
     max_output_tokens: int = 256
     env_step_seconds: float = 0.2
     #: breakpoint-mode profiles: also cache the protected prefix (robust agent-loop layout)
@@ -272,8 +275,14 @@ class AgentEpisode:
         )  # fmt: skip
         return (None if self.done else self.state()), trace
 
+    @property
+    def policy_seed(self) -> int:
+        """Seed for stochastic policies: distinct per (seed, task), reproducible."""
+        digest = hashlib.sha256(f"{self.seed}:{self.task_id}".encode()).digest()
+        return int.from_bytes(digest[:4], "big")
+
     def run(self, policy: MemoryPolicy) -> AgentEpisode:
-        policy.reset(self.seed)
+        policy.reset(self.policy_seed)
         state: ControllerState | None = self.begin()
         while state is not None:
             state, _ = self.advance(policy.decide(state))
@@ -483,12 +492,29 @@ def build_llm(kind: str, *, allow_paid: bool) -> LLMBackend:
     raise SystemExit(f"unknown --llm {kind!r}")
 
 
-def build_env(name: str) -> AgentEnv:
+ENV_CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs" / "env"
+
+
+def load_env_settings(name: str) -> dict[str, Any]:
+    """``configs/env/<name>.yaml`` -> {"env": {...}, "loop": {...}} (empty if absent)."""
+    path = ENV_CONFIG_DIR / f"{name}.yaml"
+    if not path.exists():
+        return {"env": {}, "loop": {}}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return {"env": dict(data.get("env") or {}), "loop": dict(data.get("loop") or {})}
+
+
+def build_env(name: str, **overrides: Any) -> AgentEnv:
     if name == "toy":
         from memory_rl.envs.toy import KeyHuntEnv
 
-        return KeyHuntEnv()
+        kwargs = {**load_env_settings(name)["env"], **overrides}
+        return KeyHuntEnv(**kwargs)
     raise SystemExit(f"unknown --env {name!r}; only 'toy' is implemented (ALFWorld: see README)")
+
+
+def build_loop_config(name: str, **overrides: Any) -> LoopConfig:
+    return LoopConfig(**{**load_env_settings(name)["loop"], **overrides})
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -504,6 +530,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     env = build_env(args.env)
+    loop_config = build_loop_config(args.env)
     llm = build_llm(args.llm, allow_paid=args.allow_paid)
     profile = get_profile(args.profile)
     tokenizer = TiktokenTokenizer("o200k_base")
@@ -511,7 +538,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     for task_id in list(env.task_ids(args.split))[:episodes]:
         episode = AgentEpisode(
             env, task_id, seed=args.seed, llm=llm, meter=CacheAwareCostMeter(profile),
-            tokenizer=tokenizer, profile=profile, split=args.split,
+            tokenizer=tokenizer, profile=profile, config=loop_config, split=args.split,
         )  # fmt: skip
         record = episode.run(AlwaysKeepPolicy()).record(method="full_history")
         print(

@@ -1,0 +1,13 @@
+# KeyHunt toy benchmark setting (the core toy condition for Phases 5-8).
+# 3-6 keys per task; a 5,000-token context budget, so full history overflows on
+# long tasks (median final prompt ~4.6K, max ~6.4K tokens with o200k_base) and
+# a policy has to decide whether, what and when to compact.
+# Secondary condition: context_limit_tokens 16384 (no pressure; never-edit is
+# then close to optimal under cheap cache reads).
+env:
+  min_keys: 3
+  max_keys: 6
+  step_slack: 4
+loop:
+  context_limit_tokens: 5000
+  max_output_tokens: 256

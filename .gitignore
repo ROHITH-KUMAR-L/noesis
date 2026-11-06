@@ -40,3 +40,7 @@ data/raw/
 .idea/
 .vscode/
 .DS_Store
+
+# --- Web UI -----------------------------------------------------------------
+web/node_modules/
+web/dist/

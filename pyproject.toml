@@ -20,6 +20,11 @@ dev = [
     "types-PyYAML",
 ]
 
+# CPU wheel: uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+rl = ["torch>=2.4"]
+web = ["fastapi>=0.115", "uvicorn>=0.32"]
+llmlingua = ["llmlingua>=0.2"]
+
 [project.scripts]
 noesis-smoke = "memory_rl.smoke:main"
 

@@ -8,6 +8,8 @@ requires-python = ">=3.11"
 # tiktoken backs the Phase 1 tokenizer; the answerer's tokenizer must match it.
 dependencies = [
     "tiktoken>=0.14",
+    "numpy>=1.26",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -15,7 +17,13 @@ dev = [
     "pytest>=8.3",
     "mypy>=1.13",
     "ruff>=0.8",
+    "types-PyYAML",
 ]
+
+# CPU wheel: uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+rl = ["torch>=2.4"]
+web = ["fastapi>=0.115", "uvicorn>=0.32"]
+llmlingua = ["llmlingua>=0.2"]
 
 [project.scripts]
 noesis-smoke = "memory_rl.smoke:main"

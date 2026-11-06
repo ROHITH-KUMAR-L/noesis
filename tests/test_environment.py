@@ -9,7 +9,7 @@ measured as lost.
 from __future__ import annotations
 
 import random
-from dataclasses import replace
+from typing import cast
 
 import numpy as np
 import pytest
@@ -40,7 +40,9 @@ def build_env(**overrides: object) -> MemoryEnv:
     )
 
 
-def one_task(family: TaskFamily = TaskFamily.FACT_RECALL, split: Split = Split.TRAIN) -> SyntheticTask:
+def one_task(
+    family: TaskFamily = TaskFamily.FACT_RECALL, split: Split = Split.TRAIN
+) -> SyntheticTask:
     return generate_dataset(family=family, split=split, count=1, seed=3)[0]
 
 
@@ -89,7 +91,9 @@ def test_splits_use_disjoint_templates_and_cover_every_family() -> None:
 
 
 def test_history_length_and_critical_position_vary() -> None:
-    tasks = generate_dataset(family=TaskFamily.DISTRACTOR_HEAVY, split=Split.TRAIN, count=10, seed=5)
+    tasks = generate_dataset(
+        family=TaskFamily.DISTRACTOR_HEAVY, split=Split.TRAIN, count=10, seed=5
+    )
     lengths = {len(task.history) for task in tasks}
     positions = {
         task.labels.required_facts[0].memory_id for task in tasks
@@ -234,7 +238,7 @@ def test_context_limit_is_a_reported_failure_not_a_truncation() -> None:
     info = run_all_keep(env, task)
 
     assert info["context_ok"] is False
-    assert info["total_prompt_tokens"] > 5
+    assert int(info["total_prompt_tokens"]) > 5  # type: ignore[call-overload]
     prompt = env.serialize_active_memory()
     assert len(prompt.memory_text) > 0
 
@@ -264,7 +268,9 @@ def test_critical_fact_can_be_lost_and_is_measured() -> None:
     terminated = False
     info: dict[str, object] = {}
     while not terminated:
-        operation = OperationKind.PRUNE if env.valid_actions() and _current_id(env) == critical_id else OperationKind.KEEP
+        operation = (
+            OperationKind.PRUNE if _current_id(env) == critical_id else OperationKind.KEEP
+        )
         _, _, terminated, info = env.step(operation)
 
     assert info["correct"] is False
@@ -273,8 +279,8 @@ def test_critical_fact_can_be_lost_and_is_measured() -> None:
     assert info["critical_facts_retained"] == ()
 
 
-def _current_id(env: MemoryEnv) -> str:
-    return env.valid_actions() and env._current_item().memory_id  # type: ignore[attr-defined]
+def _current_id(env: MemoryEnv) -> str | None:
+    return env.current_item_id
 
 
 def test_pruning_everything_empties_the_prompt() -> None:
@@ -364,8 +370,6 @@ def test_random_valid_policies_run_1000_episodes_without_failures() -> None:
         assert info["termination_reason"] == "completed_all_candidates"
         assert info["budget_tokens"] == env.budget_tokens
         assert isinstance(info["correct"], bool)
-        assert info["critical_facts_lost"] == tuple(
-            fact_id
-            for fact_id in info["critical_facts_lost"]  # type: ignore[union-attr]
-            if fact_id not in info["critical_facts_retained"]  # type: ignore[operator]
-        )
+        lost = cast(tuple[str, ...], info["critical_facts_lost"])
+        retained = cast(tuple[str, ...], info["critical_facts_retained"])
+        assert not set(lost) & set(retained)

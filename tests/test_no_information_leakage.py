@@ -27,7 +27,9 @@ TOKENIZER = TestTokenizer()
 
 
 def build_env() -> MemoryEnv:
-    return MemoryEnv(tokenizer=TOKENIZER, answerer=SyntheticExactMatchAnswerer(), config=EnvConfig())
+    return MemoryEnv(
+        tokenizer=TOKENIZER, answerer=SyntheticExactMatchAnswerer(), config=EnvConfig()
+    )
 
 
 def _task(family: TaskFamily = TaskFamily.FACT_RECALL):
@@ -111,20 +113,22 @@ def test_answerer_only_sees_active_memory() -> None:
 
     # Prune the tool result that carries the dependency key, keep everything else.
     tool_id = next(
-        turn.memory_id for turn in task.history if turn.memory_type.value == "tool_result"
+        turn.memory_id
+        for turn in task.history
+        if turn.memory_type.value == "tool_result" and turn.text.startswith("Tool:")
     )
     terminated = False
     info: dict[str, object] = {}
     while not terminated:
-        prompt_before = env.serialize_active_memory()
-        current = prompt_before.included_ids[0]
+        current = env.current_item_id
         action = OperationKind.PRUNE if current == tool_id else OperationKind.KEEP
         _, _, terminated, info = env.step(action)
 
     assert info["answer"] == UNKNOWN_ANSWER
     assert info["correct"] is False
     prompt = env.serialize_active_memory()
-    assert all(turn.memory_id != tool_id for turn in task.history if turn.text in prompt.memory_text)
+    pruned_text = next(turn.text for turn in task.history if turn.memory_id == tool_id)
+    assert pruned_text not in prompt.memory_text
 
 
 def test_memory_items_carry_no_simulator_metadata() -> None:
@@ -136,7 +140,9 @@ def test_memory_items_carry_no_simulator_metadata() -> None:
         assert item  # ids only; labels never enter the prompt
 
     prompt = env.serialize_active_memory()
-    assert task.labels.reference_answer not in prompt.text
+    # The answer may legitimately appear in memory content; it must never be
+    # injected by the serializer (instructions, headers, question).
+    assert task.labels.reference_answer not in prompt.fixed_text
     for fact in task.labels.required_facts:
         # The fact text is legitimate memory content; the label object is not.
         assert fact.memory_id not in prompt.text

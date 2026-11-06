@@ -28,6 +28,12 @@ class Tokenizer(Protocol):
     def count(self, text: str) -> int: ...
 
 
+class EncodingTokenizer(Tokenizer, Protocol):
+    """A tokenizer that also exposes token IDs (needed for prefix-cache matching)."""
+
+    def encode(self, text: str) -> list[int]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class TestTokenizer:
     """Deterministic test-only tokenizer: one token per Unicode code point.
@@ -44,6 +50,9 @@ class TestTokenizer:
 
     def count(self, text: str) -> int:
         return len(text)
+
+    def encode(self, text: str) -> list[int]:
+        return [ord(char) for char in text]
 
 
 def _load_tiktoken(encoding_name: str) -> Any:
@@ -85,7 +94,10 @@ class TiktokenTokenizer:
         return self._encoding
 
     def count(self, text: str) -> int:
-        return len(self._encoding_or_raise().encode(text, disallowed_special=()))
+        return len(self.encode(text))
+
+    def encode(self, text: str) -> list[int]:
+        return list(self._encoding_or_raise().encode(text, disallowed_special=()))
 
 
 def build_tokenizer(spec: str = DEFAULT_TOKENIZER_SPEC) -> Tokenizer:

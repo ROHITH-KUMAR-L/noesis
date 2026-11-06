@@ -1,0 +1,17 @@
+# OpenAI gpt-5.4 (pre-5.6 caching rules): automatic caching, no write charge.
+name: openai-gpt-5-4
+model: gpt-5.4
+input_per_mtok: 2.50
+output_per_mtok: 15.00
+cache_read_multiplier: 0.10     # cached input $0.25 / MTok
+cache_write_multiplier: 1.00    # "No additional cache-write charge" for earlier models
+min_cacheable_tokens: 1024      # documented for GPT-5.6+; earlier models "vary by request settings"
+block_size: 128                 # cached_tokens rounded down to a multiple of 128
+ttl_seconds: 300                # in_memory entries: ~5-10 min of inactivity (lower bound used)
+mode: automatic
+source: https://developers.openai.com/api/docs/pricing
+retrieved: "2026-11-04"
+notes: >-
+  Cache rules from https://developers.openai.com/api/docs/guides/prompt-caching
+  (retrieved 2026-11-04). TTL is approximate on the provider side; 300 s is the
+  conservative end of the documented range.

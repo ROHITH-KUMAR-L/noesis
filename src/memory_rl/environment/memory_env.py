@@ -310,6 +310,13 @@ class MemoryEnv:
             total_candidates=len(self._order),
         )
 
+    @property
+    def current_item_id(self) -> str | None:
+        """ID of the item awaiting a decision, or None once the episode ended."""
+        if self._termination_reason is not None or self._cursor >= len(self._order):
+            return None
+        return self._order[self._cursor]
+
     def _current_item(self) -> MemoryItem:
         return self._require_store().get(self._order[self._cursor])
 
@@ -330,7 +337,9 @@ class MemoryEnv:
         if isinstance(action, bool) or not isinstance(action, int):
             raise ValueError(f"invalid action {action!r}")
         if not 0 <= action < len(ACTION_ORDER):
-            raise ValueError(f"invalid action index {action!r}; expected 0..{len(ACTION_ORDER) - 1}")
+            raise ValueError(
+                f"invalid action index {action!r}; expected 0..{len(ACTION_ORDER) - 1}"
+            )
         return ACTION_ORDER[action]
 
 

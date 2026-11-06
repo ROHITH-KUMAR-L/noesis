@@ -1,0 +1,16 @@
+# OpenAI gpt-6.1-sol (GPT-5.6+ caching rules): automatic caching with a write surcharge.
+name: openai-gpt-6-1-sol
+model: gpt-6.1-sol
+input_per_mtok: 2.00
+output_per_mtok: 10.00
+cache_read_multiplier: 0.05     # cached input $0.10 / MTok
+cache_write_multiplier: 1.25    # GPT-5.6+: writes 1.25x with the 30m default retention
+min_cacheable_tokens: 1024      # GPT-5.6+: 1,024 visible input tokens
+block_size: 1                   # GPT-5.6+: exact eligible boundary, no 128-token rounding
+ttl_seconds: 1800               # default minimum lifetime 30 minutes
+mode: automatic
+source: https://developers.openai.com/api/docs/pricing
+retrieved: "2026-11-04"
+notes: >-
+  Cache rules from https://developers.openai.com/api/docs/guides/prompt-caching
+  (retrieved 2026-11-04). Short-context (<=272K) standard-tier rates.

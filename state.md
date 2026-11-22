@@ -1,9 +1,13 @@
 # Project state
 
-Snapshot of where the work stands, so it can be picked up later. Last updated 2026-11-06,
-on branch `feat/full-pipeline`. `main` is still at `fba7de8`.
+Snapshot of where the work stands, so it can be picked up later. Last updated 2026-11-22.
+`feat/full-pipeline` was merged into `main` as `2c76980` (PR #1); the README and CLAUDE.md status
+lines now match this file.
 
-**Bottom line:** Phases 0–6 are implemented, tested and committed. The demo web UI is built and
+**Bottom line:** Phases 0–6 are implemented, tested and committed for the toy env. Phases 3, 5
+and 6 still need their ALFWorld exit-gate parts (competence gate, baseline runs, PPO subset run),
+which first need a frozen LLM that fits the hardware. Planned novelty add-ons N1–N4 are in
+CLAUDE.md ("Planned contributions"). The demo web UI is built and
 committed, but no one has looked at it in a browser yet. The final evaluation (Phase 8) has not
 run. Every number below comes from the **toy KeyHunt environment with a scripted mock LLM**.
 None of it is an ALFWorld result or a measured provider bill.

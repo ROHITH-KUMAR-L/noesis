@@ -5,8 +5,9 @@ Guidance for Claude (and other AI coding agents) working in this repo. Read this
 interfaces, per-phase tests and exit gates). If this file and those disagree on **scope or
 claims**, this file is newer; flag the conflict instead of silently picking one.
 
-Status lives in the README phase table. As of 2026-10-27: Phases 0–1 done, Phase 2 (cache cost
-model) next, **no RL training has run and no result exists**.
+Status lives in the README phase table; details and next steps in [`state.md`](state.md). As of
+2026-11-22: Phases 0–6 done, Phase 8 (final evaluation) next. PPO has only been trained on the
+toy env with a mock LLM (validation split). **No test-split, ALFWorld or real-LLM result exists.**
 
 ## Project
 
@@ -49,34 +50,49 @@ respecting a given cost or context budget.
 
 ### Novelty (claim exactly this, no stronger)
 
-- **To our knowledge, the first RL-learned memory controller for agents trained on a
-  cache-adjusted cost objective.** Prior cache-aware methods (TokenPilot, AKV, CADOC, CAPC) use
-  fixed rules or formulas; prior learned pruners (TRACER, LRE) reward token count.
-- **Learning *when* to edit, not just what.** An explicit edit-now-or-not gate. Hypothesis: it
-  learns rare, large compactions that keep the cached prefix stable, while token-based pruners
-  trim every turn and break the cache each time. This is tested directly (prd.md H3). CADOC
-  already decides when to batch edits analytically, so it is the closest competitor here.
-- **Budget-constrained, budget-conditioned control (stretch).** A single policy meets a given
-  budget as a constraint at runtime, rather than tuning a threshold or penalty per budget.
-- **Evaluation in real cost.** Show empirically when "fewer tokens" and "lower bill" disagree,
-  which token-only evaluations cannot reveal.
+Narrowed after the 2026-11-22 literature check ([`docs/novelty_check.md`](docs/novelty_check.md),
+[`docs/gaps_and_novelty.md`](docs/gaps_and_novelty.md)).
 
-Never write "the first" without "to our knowledge". Re-check arXiv for new prior art before the
-report (Phase 9).
+- **To our knowledge, the first memory controller for LLM agents trained with RL on a
+  cache-adjusted cost objective** (task success minus billed input cost after prefix-cache
+  discounts), as a lightweight policy over a **frozen** LLM. Prior cache-aware context managers
+  (CADOC, CAPC, TokenPilot, Self-GC, AKV) use analytical rules, schedules or LLM planners; prior
+  learned ones (TRACER, LRE, MemAct, AutoCompact, ContextBudget) optimise success with token,
+  context-length or storage penalties, and most fine-tune the agent.
+- **A learned, cache-priced edit gate.** Learned edit timing exists (AutoCompact, ContextBudget)
+  but is trained without cache cost; cache-aware timing exists (CADOC, Self-GC) but is not
+  learned. The combination is the claim. "Rare, large compactions that keep the cached prefix
+  stable" is hypothesis H3 until the no-gate ablation and edit-timing comparison vs CADOC show it.
+- **Budget control (stretch), no "first".** Budget-conditioned and Lagrangian control already
+  exist (ContextBudget, 2610.28409, LACONIC). Ours differs only in that the budget is billed cost
+  after caching, for a controller over a frozen LLM.
+- **Evaluation in real cost is a replication, not a novelty.** 2611.22238 and CAPC already show
+  "fewer tokens" and "lower bill" can disagree. We test whether this holds for learned
+  controllers (token-reward vs cache-reward PPO), reporting both token and real cost, including
+  for observation masking (B3).
+
+Never write "the first" without "to our knowledge". Every claim carries the caveat "toy env,
+mock agent" until there is a real-LLM ALFWorld result. Re-check arXiv before the report (Phase 9).
 
 ## Key prior art
 
 | Work | ID | Relevance |
 |---|---|---|
 | CADOC | arXiv 2609.37012 | Closest. Cache-rebuild cost in the objective, but an analytical (EOQ-style) rule, not learned. Baseline. |
-| CAPC | arXiv 2607.15516 | Cache-aware, analytical. Cite. |
-| TRACER | arXiv 2608.29363 | RL over a frozen agent, raw-token penalty. Token-reward PPO variant is our stand-in. |
-| LRE | arXiv 2606.20954 | Learned keep/evict scorer, token objective; budget via threshold. |
+| Context Has a Price | arXiv 2611.22238 | Measurement study: removing old observations raises cost 38–116% at 1/10 cache-read price. Primary motivation citation; pre-empts "real cost" as a finding. |
+| Self-GC | arXiv 2607.00692 | LLM planner picks fold/mask/prune, commits only if savings beat the cache break. Cache-aware timing, not learned. Candidate baseline. |
+| CAPC | arXiv 2607.15516 | Cache-aware, analytical two-tier cost model. Cite. |
+| AutoCompact | arXiv 2610.02163 | Learns when to compact (SFT then RL) but trains the agent; no cache term. |
+| ContextBudget | arXiv 2604.01664 | RL learns when/how much to compress under varying budgets; no cache term, no Lagrangian. |
+| TRACER | arXiv 2608.29363 | REINFORCE over per-tool retention ratios; objective success + tokens + re-invocations. Token-reward PPO is our stand-in. |
+| LRE | arXiv 2606.20954 | Learned keep/evict scorer. "Token objective, budget via threshold" not in abstract (unverified). |
 | Observation masking | arXiv 2508.21433 | Simple and strong. **Must-beat baseline** (B3). |
-| Beyond Token Savings | arXiv 2609.32961 | Token savings vs real cost; motivation. |
-| TokenPilot | arXiv 2606.17016 | Cache-aware hand-written rules. |
-| AKV | arXiv 2610.28577 | Cache-aware hand-written rules. |
-| PCRL | IEEE Access, 2024 | IEEE-indexed citation for RL-based prompt compression. |
+| TokenPilot | arXiv 2606.17016 | Cache-aware; abstract doesn't say rule-based or learned. |
+| AKV | arXiv 2610.28577 | "Cache Engineering for Agents": edits the KV cache directly, with LLM-driven self-improvement of cache policies. Not prompt-level, not hand-written rules. |
+| Beyond Token Savings | arXiv 2609.32961 | Abstract does not cover caching; don't cite it for the cache-cost argument. |
+| Budgeted agents | arXiv 2610.28409 | One policy across token/call/step budgets; fine-tunes the agent. Threatens a "first budget-conditioned" claim. |
+| PCRL | IEEE Access 12:72578–87, 2024, DOI 10.1109/ACCESS.2024.3403426 | IEEE citation for RL-based prompt compression. |
+| Cost-aware memory RL | IEEE RO-MAN 2026, DOI 10.1109/RO-MAN72286.2026.11714580 | Closest IEEE paper: REINFORCE memory-write policy with storage penalty, no cache cost. |
 
 Full literature notes, critique and the final proposal:
 <https://claude.ai/artifact/CM2osupFWhbX6tQ6Majt5s>. Verify any bibliographic detail

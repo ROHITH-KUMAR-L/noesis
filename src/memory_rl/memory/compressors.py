@@ -7,6 +7,7 @@ fact the agent needs later, and task success is what measures that.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 from memory_rl.memory.operations import RuleBasedCompressor
 
@@ -27,12 +28,20 @@ class LineTruncationCompressor:
             raise ValueError("words_per_line must be >= 1")
 
     def compress(self, text: str) -> str | None:
-        lines = []
-        for raw in text.splitlines():
-            cleaned = RuleBasedCompressor().compress(raw) or ""
-            words = cleaned.split()
-            if not words:
-                continue
-            kept = words[: self.words_per_line]
-            lines.append(" ".join(kept) + (" …" if len(words) > self.words_per_line else ""))
-        return "\n".join(lines)
+        return _truncate_lines(text, self.words_per_line)
+
+
+@lru_cache(maxsize=4096)
+def _truncate_lines(text: str, words_per_line: int) -> str:
+    """Pure function of its arguments, memoised: the agent loop asks for the
+    compressed form of the same history items on every turn (masks, gains)."""
+    rule = RuleBasedCompressor()
+    lines = []
+    for raw in text.splitlines():
+        cleaned = rule.compress(raw) or ""
+        words = cleaned.split()
+        if not words:
+            continue
+        kept = words[:words_per_line]
+        lines.append(" ".join(kept) + (" …" if len(words) > words_per_line else ""))
+    return "\n".join(lines)

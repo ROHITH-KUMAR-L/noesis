@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 from numpy.typing import NDArray
@@ -75,8 +76,10 @@ class Observation:
         return np.asarray(self.action_mask.any(axis=1))
 
 
-def _words(text: str) -> set[str]:
-    return set(_WORD.findall(text.lower()))
+@lru_cache(maxsize=4096)
+def _words(text: str) -> frozenset[str]:
+    # Memoised (item texts recur every turn); frozen so the shared result can't be mutated.
+    return frozenset(_WORD.findall(text.lower()))
 
 
 def build_observation(

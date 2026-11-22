@@ -19,6 +19,8 @@ from memory_rl.memory import EncodingTokenizer, MemoryItem, MemoryStatus, Memory
 
 CHAT_TEMPLATE = "<|im_start|>{role}\n{content}<|im_end|>\n"
 OBSERVATION_PREFIX = "Observation: "
+#: Distinct rendered messages memoised per serializer before the cache is reset.
+_MESSAGE_CACHE_SIZE = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,11 +61,23 @@ class AgentPromptSerializer:
             raise ValueError("system_prompt must be non-empty")
         self.tokenizer = tokenizer
         self.system_prompt = system_prompt
+        # Messages are encoded separately and most are unchanged between calls,
+        # so their IDs are memoised. Encoding is a pure function of the rendered
+        # text; the cache is dropped if ``tokenizer`` is reassigned.
+        self._encoded: dict[str, tuple[int, ...]] = {}
+        self._encoded_by: EncodingTokenizer = tokenizer
 
-    def _encode(self, message: ChatMessage) -> list[int]:
-        return self.tokenizer.encode(
-            CHAT_TEMPLATE.format(role=message.role, content=message.content)
-        )
+    def _encode(self, message: ChatMessage) -> tuple[int, ...]:
+        if self._encoded_by is not self.tokenizer:
+            self._encoded, self._encoded_by = {}, self.tokenizer
+        rendered = CHAT_TEMPLATE.format(role=message.role, content=message.content)
+        ids = self._encoded.get(rendered)
+        if ids is None:
+            ids = tuple(self.tokenizer.encode(rendered))
+            if len(self._encoded) >= _MESSAGE_CACHE_SIZE:
+                self._encoded.clear()
+            self._encoded[rendered] = ids
+        return ids
 
     def protected_messages(self, instruction: str, few_shot: str) -> tuple[ChatMessage, ...]:
         task = f"{few_shot}\n\nNow solve this task.\n{instruction}" if few_shot else instruction

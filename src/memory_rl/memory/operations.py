@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import ClassVar, Protocol
 
 from memory_rl.memory.models import (
@@ -33,6 +34,7 @@ class Compressor(Protocol):
 _EDGE_PUNCTUATION = re.compile(r"^\W+|\W+$")
 
 
+@lru_cache(maxsize=65536)
 def _bare_word(word: str) -> str:
     return _EDGE_PUNCTUATION.sub("", word).lower()
 

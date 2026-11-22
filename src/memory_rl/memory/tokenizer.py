@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol
 
 DEFAULT_TOKENIZER_SPEC = "tiktoken:cl100k_base"
+#: Distinct texts memoised per ``TiktokenTokenizer`` before the cache is reset.
+_ENCODE_CACHE_SIZE = 8192
 
 
 class TokenizerError(RuntimeError):
@@ -52,7 +54,7 @@ class TestTokenizer:
         return len(text)
 
     def encode(self, text: str) -> list[int]:
-        return [ord(char) for char in text]
+        return list(map(ord, text))
 
 
 def _load_tiktoken(encoding_name: str) -> Any:
@@ -75,6 +77,7 @@ class TiktokenTokenizer:
     def __init__(self, encoding_name: str = "cl100k_base") -> None:
         self._encoding_name = encoding_name
         self._encoding: Any | None = None
+        self._cache: dict[str, tuple[int, ...]] = {}
 
     @property
     def name(self) -> str:
@@ -94,10 +97,24 @@ class TiktokenTokenizer:
         return self._encoding
 
     def count(self, text: str) -> int:
-        return len(self.encode(text))
+        return len(self._encode_cached(text))
 
     def encode(self, text: str) -> list[int]:
-        return list(self._encoding_or_raise().encode(text, disallowed_special=()))
+        # A fresh list every call: callers may mutate it without touching the cache.
+        return list(self._encode_cached(text))
+
+    def _encode_cached(self, text: str) -> tuple[int, ...]:
+        """Memoised encoding. BPE is a pure function of ``text``, so a cached
+        result is identical to re-encoding; agent loops re-encode the same
+        history messages and compressed candidates on every turn."""
+        cache = self._cache
+        ids = cache.get(text)
+        if ids is None:
+            ids = tuple(self._encoding_or_raise().encode(text, disallowed_special=()))
+            if len(cache) >= _ENCODE_CACHE_SIZE:
+                cache.clear()  # bounded memory; correctness never depends on hits
+            cache[text] = ids
+        return ids
 
 
 def build_tokenizer(spec: str = DEFAULT_TOKENIZER_SPEC) -> Tokenizer:

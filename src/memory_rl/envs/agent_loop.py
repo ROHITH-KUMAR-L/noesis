@@ -152,6 +152,9 @@ class AgentEpisode:
         self._last_cached_fraction = 0.0
         self._next_id = 0
         self._started = False
+        self._state_cache: (
+            tuple[tuple[Any, ...], tuple[MemoryItem, ...], ControllerState] | None
+        ) = None
 
     # --- public API ---------------------------------------------------------
 
@@ -182,8 +185,43 @@ class AgentEpisode:
         )
 
     def state(self) -> ControllerState:
-        prompt = self.current_prompt()
+        # advance() needs the state its caller was just handed; rebuilding it
+        # re-serialises the prompt. Reuse it only if every input is unchanged
+        # (store items are immutable and replaced on edit, so identity suffices).
         active = self.store.active_items()
+        key = self._state_key()
+        cached = self._state_cache
+        if (
+            cached is not None
+            and cached[0] == key
+            and len(cached[1]) == len(active)
+            and all(a is b for a, b in zip(cached[1], active, strict=True))
+        ):
+            return cached[2]
+        state = self._build_state(active)
+        self._state_cache = (key, active, state)
+        return state
+
+    def _state_key(self) -> tuple[Any, ...]:
+        serializer = self.serializer
+        return (
+            self._turn,
+            self._last_cached_fraction,
+            self._instruction,
+            self._few_shot,
+            self.env.max_steps,
+            self.config,
+            # Objects, not id(): the key keeps them alive, so identities can't be reused.
+            self.profile,
+            self.compressor,
+            self.tokenizer,
+            serializer,
+            serializer.tokenizer,
+            serializer.system_prompt,
+        )
+
+    def _build_state(self, active: tuple[MemoryItem, ...]) -> ControllerState:
+        prompt = self.current_prompt()
         protected = {item.memory_id for item in active[len(active) - self.config.protect_latest :]}
         views = []
         for item in active:
